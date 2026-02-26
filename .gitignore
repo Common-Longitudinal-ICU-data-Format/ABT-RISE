@@ -1,0 +1,7 @@
+# Data files
+*.csv
+*.parquet
+clif_config.json
+output/
+output_phi/
+output_to_share/

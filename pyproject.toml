@@ -1,0 +1,11 @@
+[project]
+name = "abt-rise"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "clifpy>=0.3.9",
+    "marimo>=0.20.2",
+    "polars>=1.38.1",
+]
