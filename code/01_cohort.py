@@ -7,9 +7,16 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import polars as pl
+    import pandas as pd
     import json
     from datetime import timedelta
     from pathlib import Path
+
+    def strip_tz(df: pd.DataFrame) -> pd.DataFrame:
+        """Remove timezone from all tz-aware datetime columns, preserving wall-clock times."""
+        for col in df.select_dtypes(include=["datetimetz"]).columns:
+            df[col] = df[col].dt.tz_localize(None)
+        return df
 
     _config_path = Path(__file__).parent.parent / "clif_config.json"
     with open(_config_path) as _f:
@@ -31,22 +38,36 @@ def _():
         SITE_NAME,
         TIMEZONE,
         json,
+        pd,
         pl,
+        strip_tz,
         timedelta,
     )
 
 
 @app.cell
-def _(DATA_DIR, FILETYPE, TIMEZONE, pl):
+def _(DATA_DIR, FILETYPE, TIMEZONE, pl, strip_tz):
     from clifpy import Hospitalization
 
     _hosp = Hospitalization.from_file(
         data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE, verbose=False,
     )
-    hosp_df = pl.from_pandas(_hosp.df)
+    hosp_df = pl.from_pandas(strip_tz(_hosp.df))
     n_total = len(hosp_df)
     print(f"Total hospitalizations: {n_total:,}")
     return hosp_df, n_total
+
+
+@app.cell
+def _(DATA_DIR, FILETYPE, TIMEZONE, pl, strip_tz):
+    from clifpy import Patient
+
+    _patient = Patient.from_file(
+        data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE, verbose=False,
+    )
+    patient_df = pl.from_pandas(strip_tz(_patient.df))
+    print(f"Total patients: {len(patient_df):,}")
+    return (patient_df,)
 
 
 @app.cell
@@ -77,17 +98,17 @@ def _(SITE_NAME, hosp_adults, pl):
 
 
 @app.cell
-def _(DATA_DIR, FILETYPE, TIMEZONE, hosp_dated, pl):
+def _(DATA_DIR, FILETYPE, TIMEZONE, hosp_dated, pl, strip_tz):
     from clifpy import Adt
 
     _adt = Adt.from_file(
         data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE, verbose=False,
     )
-    adt_df = pl.from_pandas(_adt.df)
+    adt_df = pl.from_pandas(strip_tz(_adt.df))
 
     _icu_hosp_ids = (
         adt_df
-        .filter(pl.col("location_category") == "icu")
+        .filter(pl.col("location_category").str.to_lowercase() == "icu")
         .select("hospitalization_id")
         .unique()
     )
@@ -109,7 +130,7 @@ def _(adt_df, hosp_icu, pl):
         _adt_sorted
         .with_columns(
             pl.col("location_category")
-            .is_in(["icu", "procedural"])
+            .str.to_lowercase().is_in(["icu", "procedural"])
             .alias("is_icu_proc")
         )
         .with_columns(
@@ -143,7 +164,18 @@ def _(adt_df, hosp_icu, pl):
     )
 
     # Drop stays with null icu_out_dttm
-    icu_stays = _icu_blocks.filter(pl.col("icu_out_dttm").is_not_null())
+    icu_stays = (
+        _icu_blocks
+        .filter(pl.col("icu_out_dttm").is_not_null())
+        .sort(["hospitalization_id", "icu_in_dttm"])
+        .with_columns(
+            pl.col("icu_in_dttm")
+            .rank("ordinal")
+            .over("hospitalization_id")
+            .cast(pl.UInt32)
+            .alias("icu_rank")
+        )
+    )
     _valid_hosp_ids = icu_stays.select("hospitalization_id").unique()
     hosp_after_merge = hosp_icu.join(
         _valid_hosp_ids, on="hospitalization_id", how="inner"
@@ -157,41 +189,36 @@ def _(adt_df, hosp_icu, pl):
 
 @app.cell
 def _(hosp_after_merge, icu_stays, pl, timedelta):
-    # Get earliest ICU stay per hospitalization (sort then deduplicate)
-    first_icu = (
+    # Keep ALL ICU stays >= 24h (not just the first)
+    icu_24h = (
         icu_stays
-        .sort(["hospitalization_id", "icu_in_dttm"])
-        .unique(subset=["hospitalization_id"], keep="first")
         .with_columns(
             (pl.col("icu_out_dttm") - pl.col("icu_in_dttm")).alias("icu_los")
         )
+        .filter(pl.col("icu_los") >= timedelta(hours=24))
     )
-    _qualifying = first_icu.filter(pl.col("icu_los") >= timedelta(hours=24))
-    hosp_24h = hosp_after_merge.join(
-        _qualifying.select("hospitalization_id"),
-        on="hospitalization_id",
-        how="inner",
-    )
-    first_icu = _qualifying
+    _valid = icu_24h.select("hospitalization_id").unique()
+    hosp_24h = hosp_after_merge.join(_valid, on="hospitalization_id", how="inner")
     n_excluded_short_icu = len(hosp_after_merge) - len(hosp_24h)
-    print(f"Excluded (first ICU < 24h): {n_excluded_short_icu:,}")
+    print(f"Excluded (no ICU stay >= 24h): {n_excluded_short_icu:,}")
     print(f"Remaining: {len(hosp_24h):,}")
-    return first_icu, hosp_24h, n_excluded_short_icu
+    return hosp_24h, icu_24h, n_excluded_short_icu
 
 
 @app.cell
-def _(DATA_DIR, FILETYPE, TIMEZONE, first_icu, pl):
+def _(DATA_DIR, FILETYPE, TIMEZONE, icu_24h, pl, strip_tz):
     from clifpy import RespiratorySupport
 
     _rs = RespiratorySupport.from_file(
         data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE, verbose=False,
     )
-    _rs_all = pl.from_pandas(_rs.df)
+    _rs_all = pl.from_pandas(strip_tz(_rs.df))
 
+    # Join with ALL qualifying ICU stays (>= 24h), not just the first
     rs_df = (
         _rs_all
         .join(
-            first_icu.select(["hospitalization_id", "icu_in_dttm", "icu_out_dttm"]),
+            icu_24h.select(["hospitalization_id", "icu_in_dttm", "icu_out_dttm"]),
             on="hospitalization_id",
             how="inner",
         )
@@ -200,39 +227,320 @@ def _(DATA_DIR, FILETYPE, TIMEZONE, first_icu, pl):
             & (pl.col("recorded_dttm") <= pl.col("icu_out_dttm"))
         )
     )
-    print(f"Respiratory support records in first ICU window: {len(rs_df):,}")
+    print(f"Respiratory support records in qualifying ICU windows: {len(rs_df):,}")
     return (rs_df,)
 
 
 @app.cell
-def _(hosp_24h, pl, rs_df):
-    _imv_hosp = (
-        rs_df
-        .filter(pl.col("device_category") == "IMV")
+def _(hosp_24h, icu_24h, pl, rs_df):
+    # --- Exclusion: tracheostomy == 1 at any point in ICU windows ---
+    _trach_ids = (
+        rs_df.filter(pl.col("tracheostomy") == 1)
         .select("hospitalization_id")
         .unique()
     )
-    hosp_final = hosp_24h.join(_imv_hosp, on="hospitalization_id", how="inner")
-    n_excluded_no_imv = len(hosp_24h) - len(hosp_final)
-    print(f"Excluded (no IMV in first ICU): {n_excluded_no_imv:,}")
+    _hosp_no_trach = hosp_24h.join(_trach_ids, on="hospitalization_id", how="anti")
+    _icu_no_trach = icu_24h.join(_trach_ids, on="hospitalization_id", how="anti")
+    n_excluded_trach = len(hosp_24h) - len(_hosp_no_trach)
+    print(f"Excluded (tracheostomy): {n_excluded_trach:,}")
+    print(f"Remaining: {len(_hosp_no_trach):,}")
+
+    # --- Exclusion: Trach Collar device in ICU windows ---
+    _collar_ids = (
+        rs_df.filter(pl.col("device_category").str.to_lowercase() == "trach collar")
+        .select("hospitalization_id")
+        .unique()
+    )
+    _hosp_no_collar = _hosp_no_trach.join(_collar_ids, on="hospitalization_id", how="anti")
+    _icu_no_collar = _icu_no_trach.join(_collar_ids, on="hospitalization_id", how="anti")
+    n_excluded_collar = len(_hosp_no_trach) - len(_hosp_no_collar)
+    print(f"Excluded (trach collar): {n_excluded_collar:,}")
+    print(f"Remaining: {len(_hosp_no_collar):,}")
+
+    # --- Find first ICU stay with IMV (from remaining) ---
+    _imv_stays = (
+        rs_df.filter(pl.col("device_category").str.to_lowercase() == "imv")
+        .select(["hospitalization_id", "icu_in_dttm"])
+        .unique()
+    )
+    first_icu = (
+        _icu_no_collar
+        .join(_imv_stays, on=["hospitalization_id", "icu_in_dttm"], how="semi")
+        .sort(["hospitalization_id", "icu_in_dttm"])
+        .unique(subset=["hospitalization_id"], keep="first")
+    )
+    hosp_final = _hosp_no_collar.join(
+        first_icu.select("hospitalization_id"), on="hospitalization_id", how="inner"
+    )
+    n_excluded_no_imv = len(_hosp_no_collar) - len(hosp_final)
+    print(f"Excluded (no IMV in any ICU stay >= 24h): {n_excluded_no_imv:,}")
     print(f"Final cohort: {len(hosp_final):,}")
-    return hosp_final, n_excluded_no_imv
+    return (
+        first_icu,
+        hosp_final,
+        n_excluded_collar,
+        n_excluded_no_imv,
+        n_excluded_trach,
+    )
 
 
 @app.cell
-def _(OUTPUT_PHI, first_icu, hosp_final, pl, rs_df):
-    _rs_counts = (
+def _(DATA_DIR, FILETYPE, TIMEZONE, first_icu, hosp_final, pd, pl, strip_tz):
+    import clifpy as _clifpy
+    import pathlib as _pathlib
+
+    _cohort_ids = hosp_final["hospitalization_id"].to_list()
+    _cache_path = _pathlib.Path(__file__).parent.parent / "output_phi" / "resp_waterfall_cohort.parquet"
+
+    if _cache_path.exists():
+        print(f"Loading cached waterfall from: {_cache_path}")
+        _resp_pd = pd.read_parquet(_cache_path)
+        _resp_pd = _resp_pd[_resp_pd["hospitalization_id"].isin(_cohort_ids)].copy()
+    else:
+        _resp = _clifpy.RespiratorySupport.from_file(
+            data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE,
+            filters={"hospitalization_id": _cohort_ids}, verbose=False,
+        )
+        _resp.df["device_category"] = _resp.df["device_category"].str.lower()
+        _resp_filled = _resp.waterfall(bfill=False, verbose=True)
+        _resp_pd = _resp_filled.df.copy()
+        _cache_path.parent.mkdir(parents=True, exist_ok=True)
+        _resp_pd.to_parquet(_cache_path, index=False)
+        print(f"Saved waterfall cache to: {_cache_path}")
+
+    _resp_pd = strip_tz(_resp_pd)
+    _resp_pl = pl.from_pandas(_resp_pd)
+
+    # Window: admission_dttm → icu_out_dttm (first ICU with IMV)
+    resp_wf = (
+        _resp_pl
+        .join(
+            hosp_final.select(["hospitalization_id", "admission_dttm"]),
+            on="hospitalization_id", how="inner",
+        )
+        .join(
+            first_icu.select(["hospitalization_id", "icu_out_dttm"]),
+            on="hospitalization_id", how="inner",
+        )
+        .filter(
+            (pl.col("recorded_dttm") >= pl.col("admission_dttm"))
+            & (pl.col("recorded_dttm") <= pl.col("icu_out_dttm"))
+        )
+        .sort(["hospitalization_id", "recorded_dttm"])
+    )
+    print(f"Waterfall resp records (admission→ICU end): {len(resp_wf):,}")
+    return (resp_wf,)
+
+
+@app.cell
+def _(hosp_final, pl, resp_wf):
+    # Forward-fill device, compute is_imv + lag/lead
+    _rs_filled = (
+        resp_wf
+        .with_columns(
+            pl.col("device_category")
+            # .forward_fill()
+            # .over("hospitalization_id")
+            .alias("device_filled")
+        )
+        .with_columns(
+            (pl.col("device_filled") == "imv").cast(pl.Int8).alias("is_imv")
+        )
+        .with_columns([
+            pl.col("is_imv").shift(1).over("hospitalization_id").alias("lag1"),
+            pl.col("is_imv").shift(2).over("hospitalization_id").alias("lag2"),
+            pl.col("is_imv").shift(-1).over("hospitalization_id").alias("lead1"),
+            pl.col("is_imv").shift(-2).over("hospitalization_id").alias("lead2"),
+            pl.col("device_filled").shift(1).over("hospitalization_id").alias("lag1_device"),
+            pl.col("device_filled").shift(-1).over("hospitalization_id").alias("lead1_device"),
+        ])
+        .with_columns(
+            ((pl.col("is_imv") == 1) & pl.col("lpm_set").is_not_null() & (pl.col("lpm_set") > 0))
+            .alias("imv_lpm_flag")
+        )
+        .with_columns(
+            pl.col("imv_lpm_flag").shift(1).over("hospitalization_id").alias("lag1_imv_lpm")
+        )
+    )
+
+    # --- Intubation: is_imv==1, (lag1==0|null), (lag2==0|null) ---
+    _intubations = _rs_filled.filter(
+        (pl.col("is_imv") == 1)
+        & ((pl.col("lag1") == 0) | pl.col("lag1").is_null())
+        & ((pl.col("lag2") == 0) | pl.col("lag2").is_null())
+    ).sort(["hospitalization_id", "recorded_dttm"])
+
+    _first_intubation = (
+        _intubations
+        .unique(subset=["hospitalization_id"], keep="first")
+        .select([
+            "hospitalization_id",
+            pl.col("recorded_dttm").alias("intubation_time"),
+            pl.col("lag1_device").alias("device_before_intubation"),
+        ])
+    )
+
+    # --- Extubation: is_imv==1, lead1==0, lead2==0 (strict 2-row) ---
+    _extubations = _rs_filled.filter(
+        (pl.col("is_imv") == 1)
+        & (pl.col("lead1") == 0)
+        & (pl.col("lead2") == 0)
+    ).sort(["hospitalization_id", "recorded_dttm"])
+
+    _first_extubation = (
+        _extubations
+        .join(_first_intubation.select(["hospitalization_id", "intubation_time"]),
+              on="hospitalization_id", how="inner")
+        .filter(pl.col("recorded_dttm") >= pl.col("intubation_time"))
+        .unique(subset=["hospitalization_id"], keep="first")
+        .select([
+            "hospitalization_id",
+            pl.col("recorded_dttm").alias("extubation_time"),
+            pl.col("lead1_device").alias("device_after_extubation"),
+        ])
+    )
+
+    # --- Extubation via IMV+LPM co-charting (definitive device switch) ---
+    _extub_lpm = (
+        _rs_filled.filter(
+            pl.col("imv_lpm_flag")
+            & ((pl.col("lag1_imv_lpm") == False) | pl.col("lag1_imv_lpm").is_null())
+        )
+        .join(_first_intubation.select(["hospitalization_id", "intubation_time"]),
+              on="hospitalization_id", how="inner")
+        .filter(pl.col("recorded_dttm") >= pl.col("intubation_time"))
+        .sort(["hospitalization_id", "recorded_dttm"])
+        .unique(subset=["hospitalization_id"], keep="first")
+        .select([
+            "hospitalization_id",
+            pl.col("recorded_dttm").alias("extubation_time"),
+            pl.lit("Cannula or Facemask").alias("device_after_extubation"),
+            pl.lit("2-row IMV+LPM").alias("extubation_method"),
+        ])
+    )
+
+    # --- Combine both extubation methods (earliest per hospitalization) ---
+    _first_extubation_combined = (
+        pl.concat([
+            _first_extubation.with_columns(pl.lit("2-row IMV").alias("extubation_method")),
+            _extub_lpm,
+        ])
+        .sort(["hospitalization_id", "extubation_time"])
+        .unique(subset=["hospitalization_id"], keep="first")
+    )
+
+    # --- No-extubation reason ---
+    _hosp_no_extub = _first_intubation.join(
+        _first_extubation_combined.select("hospitalization_id"),
+        on="hospitalization_id", how="anti",
+    ).select("hospitalization_id")
+
+    _last_rs = (
+        _rs_filled
+        .join(_hosp_no_extub, on="hospitalization_id", how="semi")
+        .unique(subset=["hospitalization_id"], keep="last")
+        .select(["hospitalization_id", "is_imv"])
+    )
+
+    _unconfirmed = (
+        _rs_filled
+        .join(_hosp_no_extub, on="hospitalization_id", how="semi")
+        .filter(
+            (pl.col("is_imv") == 1) & (pl.col("lead1") == 0) & pl.col("lead2").is_null()
+        )
+        .select("hospitalization_id").unique()
+    )
+
+    _no_extub_classified = (
+        _last_rs
+        .join(hosp_final.select(["hospitalization_id", "discharge_category"]),
+              on="hospitalization_id", how="left")
+        .join(_unconfirmed.with_columns(pl.lit(True).alias("has_unconfirmed")),
+              on="hospitalization_id", how="left")
+        .with_columns(
+            pl.when((pl.col("discharge_category").str.to_lowercase() == "expired") & (pl.col("is_imv") == 1))
+            .then(pl.lit("Died on IMV"))
+            .when(pl.col("has_unconfirmed") == True)
+            .then(pl.lit("Unconfirmed extubation (single non-IMV reading)"))
+            .when(pl.col("is_imv") == 1)
+            .then(pl.lit("Still on IMV at ICU end"))
+            .otherwise(pl.lit("Unknown"))
+            .alias("no_extubation_reason")
+        )
+        .select(["hospitalization_id", "no_extubation_reason"])
+    )
+
+    # --- Assemble ---
+    intub_extub_df = (
+        _first_intubation
+        .join(_first_extubation_combined, on="hospitalization_id", how="left")
+        .join(_no_extub_classified, on="hospitalization_id", how="left")
+        .with_columns(
+            pl.when(pl.col("extubation_time").is_not_null())
+            .then((pl.col("extubation_time") - pl.col("intubation_time")).dt.total_hours())
+            .otherwise(pl.lit(None).cast(pl.Float64))
+            .alias("imv_duration_hours")
+        )
+    )
+
+    n_excluded_no_extub = intub_extub_df.filter(pl.col("extubation_time").is_null()).height
+
+    print(f"Intubations: {intub_extub_df.height:,}")
+    print(f"Extubations: {intub_extub_df.filter(pl.col('extubation_time').is_not_null()).height:,}")
+    print(f"No extubation detected: {n_excluded_no_extub:,}")
+    return intub_extub_df, n_excluded_no_extub
+
+
+@app.cell
+def _(
+    OUTPUT_PHI,
+    adt_df,
+    first_icu,
+    hosp_final,
+    intub_extub_df,
+    patient_df,
+    pl,
+    rs_df,
+):
+    # Re-filter rs_df to only the selected first-ICU-with-IMV window
+    _rs_first = (
         rs_df
+        .join(
+            first_icu.select(["hospitalization_id", "icu_in_dttm", "icu_out_dttm"]),
+            on=["hospitalization_id", "icu_in_dttm", "icu_out_dttm"],
+            how="semi",
+        )
+    )
+    _rs_counts = (
+        _rs_first
         .group_by("hospitalization_id")
         .agg(pl.col("recorded_dttm").count().alias("n_resp_records_first_icu"))
     )
 
+    # Post-ICU location: first ADT row after the ICU window ends
+    _post_icu_loc = (
+        adt_df
+        .join(
+            first_icu.select(["hospitalization_id", "icu_out_dttm"]),
+            on="hospitalization_id",
+            how="inner",
+        )
+        .filter(pl.col("in_dttm") >= pl.col("icu_out_dttm"))
+        .sort(["hospitalization_id", "in_dttm"])
+        .unique(subset=["hospitalization_id"], keep="first")
+        .select([
+            "hospitalization_id",
+            pl.col("location_category").alias("post_icu_location"),
+        ])
+    )
+
     cohort_df = (
         hosp_final
-        .select(["hospitalization_id", "admission_dttm", "discharge_dttm"])
+        .select(["hospitalization_id", "patient_id", "admission_dttm", "discharge_dttm", "discharge_category"])
         .join(
             first_icu.select([
                 "hospitalization_id",
+                "icu_rank",
                 pl.col("icu_in_dttm").alias("first_icu_start"),
                 pl.col("icu_out_dttm").alias("first_icu_end"),
             ]),
@@ -240,17 +548,30 @@ def _(OUTPUT_PHI, first_icu, hosp_final, pl, rs_df):
             how="left",
         )
         .join(_rs_counts, on="hospitalization_id", how="left")
+        .join(_post_icu_loc, on="hospitalization_id", how="left")
+        .join(
+            patient_df.select(["patient_id", "sex_category", "race_category", "ethnicity_category"]),
+            on="patient_id",
+            how="left",
+        )
+        .join(intub_extub_df, on="hospitalization_id", how="left")
         .with_columns(
             ((pl.col("discharge_dttm") - pl.col("admission_dttm")).dt.total_hours()).alias("hospital_los_hours"),
             ((pl.col("first_icu_end") - pl.col("first_icu_start")).dt.total_hours()).alias("first_icu_los_hours"),
             pl.col("n_resp_records_first_icu").fill_null(0),
         )
+        .with_columns(
+            pl.coalesce(["post_icu_location", "discharge_category"]).alias("post_icu_location"),
+        )
     )
+
+    # Exclude hospitalizations with no extubation detected before ICU end
+    cohort_df = cohort_df.filter(pl.col("extubation_time").is_not_null())
 
     cohort_df.write_parquet(str(OUTPUT_PHI / "cohort.parquet"))
     print(f"Cohort saved to {OUTPUT_PHI / 'cohort.parquet'}")
     print(f"Shape: {cohort_df.shape}, Columns: {cohort_df.columns}")
-    return
+    return (cohort_df,)
 
 
 @app.cell
@@ -264,11 +585,14 @@ def _(
     hosp_icu,
     json,
     n_excluded_age,
+    n_excluded_collar,
     n_excluded_dates,
+    n_excluded_no_extub,
     n_excluded_no_icu,
     n_excluded_no_imv,
     n_excluded_null_out,
     n_excluded_short_icu,
+    n_excluded_trach,
     n_total,
 ):
     consort = [
@@ -309,17 +633,38 @@ def _(
         },
         {
             "step": 5,
-            "description": "First ICU stay >= 24 hours",
+            "description": "At least one ICU stay >= 24 hours",
             "remaining": len(hosp_24h),
             "excluded": n_excluded_short_icu,
-            "reason": "First ICU stay < 24 hours",
+            "reason": "No ICU stay >= 24 hours",
         },
         {
             "step": 6,
-            "description": "Has IMV in first ICU stay",
+            "description": "No tracheostomy in ICU stays",
+            "remaining": len(hosp_24h) - n_excluded_trach,
+            "excluded": n_excluded_trach,
+            "reason": "Tracheostomy recorded during ICU stay",
+        },
+        {
+            "step": 7,
+            "description": "No trach collar in ICU stays",
+            "remaining": len(hosp_24h) - n_excluded_trach - n_excluded_collar,
+            "excluded": n_excluded_collar,
+            "reason": "Trach collar device during ICU stay",
+        },
+        {
+            "step": 8,
+            "description": "Has IMV in an ICU stay >= 24h",
             "remaining": len(hosp_final),
             "excluded": n_excluded_no_imv,
-            "reason": "No IMV device in first ICU stay",
+            "reason": "No IMV device in any ICU stay >= 24h",
+        },
+        {
+            "step": 9,
+            "description": "Extubation detected before ICU end",
+            "remaining": len(hosp_final) - n_excluded_no_extub,
+            "excluded": n_excluded_no_extub,
+            "reason": "No extubation detected before ICU end",
         },
     ]
 
@@ -337,7 +682,20 @@ def _(consort, pl):
 
 
 @app.cell
-def _():
+def _(cohort_df):
+    cohort_df
+    return
+
+
+@app.cell
+def _(adt_df):
+    adt_df
+    return
+
+
+@app.cell
+def _(rs_df):
+    rs_df
     return
 
 
