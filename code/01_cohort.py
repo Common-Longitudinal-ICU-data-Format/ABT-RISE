@@ -492,9 +492,60 @@ def _(hosp_final, pl, resp_wf):
 
 
 @app.cell
+def _(DATA_DIR, FILETYPE, OUTPUT_PHI, TIMEZONE, hosp_final, pl, strip_tz):
+    from clifpy import Vitals
+
+    TARGET_VITALS = ["height_cm", "weight_kg", "spo2"]
+
+    _hosp_ids = hosp_final["hospitalization_id"].to_list()
+    _vitals = Vitals.from_file(
+        data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE,
+        filters={"hospitalization_id": _hosp_ids}, verbose=False,
+    )
+    vitals_df = pl.from_pandas(strip_tz(_vitals.df)).filter(
+        pl.col("vital_category").str.to_lowercase().is_in(TARGET_VITALS)
+    )
+    print(f"Vitals loaded (height, weight, spo2): {len(vitals_df):,}")
+    for cat in TARGET_VITALS:
+        n = vitals_df.filter(pl.col("vital_category").str.to_lowercase() == cat).height
+        print(f"  {cat}: {n:,}")
+
+    # BMI: latest weight & height per hospitalization
+    _weight = (
+        vitals_df
+        .filter(pl.col("vital_category").str.to_lowercase() == "weight_kg")
+        .sort("recorded_dttm")
+        .group_by("hospitalization_id")
+        .last()
+        .select(["hospitalization_id", pl.col("vital_value").alias("weight_kg")])
+    )
+    _height = (
+        vitals_df
+        .filter(pl.col("vital_category").str.to_lowercase() == "height_cm")
+        .sort("recorded_dttm")
+        .group_by("hospitalization_id")
+        .last()
+        .select(["hospitalization_id", pl.col("vital_value").alias("height_cm")])
+    )
+    bmi_df = (
+        _weight.join(_height, on="hospitalization_id", how="outer_coalesce")
+        .with_columns(
+            (pl.col("weight_kg") / (pl.col("height_cm") / 100.0) ** 2).alias("bmi")
+        )
+    )
+    print(f"\nBMI computed: {bmi_df.filter(pl.col('bmi').is_not_null()).height:,} / {bmi_df.height:,} hospitalizations")
+
+    _spo2_df = vitals_df.filter(pl.col("vital_category").str.to_lowercase() == "spo2")
+    _spo2_df.write_parquet(str(OUTPUT_PHI / "vitals_spo2_cohort.parquet"))
+    print(f"Saved spo2 vitals ({len(_spo2_df):,} rows) to {OUTPUT_PHI / 'vitals_spo2_cohort.parquet'}")
+    return bmi_df, vitals_df
+
+
+@app.cell
 def _(
     OUTPUT_PHI,
     adt_df,
+    bmi_df,
     first_icu,
     hosp_final,
     intub_extub_df,
@@ -536,7 +587,7 @@ def _(
 
     cohort_df = (
         hosp_final
-        .select(["hospitalization_id", "patient_id", "admission_dttm", "discharge_dttm", "discharge_category"])
+        .select(["hospitalization_id", "patient_id", "admission_dttm", "discharge_dttm", "age_at_admission", "discharge_category"])
         .join(
             first_icu.select([
                 "hospitalization_id",
@@ -550,11 +601,12 @@ def _(
         .join(_rs_counts, on="hospitalization_id", how="left")
         .join(_post_icu_loc, on="hospitalization_id", how="left")
         .join(
-            patient_df.select(["patient_id", "sex_category", "race_category", "ethnicity_category"]),
+            patient_df.select(["patient_id", "sex_category", "race_category", "ethnicity_category", "language_category"]),
             on="patient_id",
             how="left",
         )
         .join(intub_extub_df, on="hospitalization_id", how="left")
+        .join(bmi_df, on="hospitalization_id", how="left")
         .with_columns(
             ((pl.col("discharge_dttm") - pl.col("admission_dttm")).dt.total_hours()).alias("hospital_los_hours"),
             ((pl.col("first_icu_end") - pl.col("first_icu_start")).dt.total_hours()).alias("first_icu_los_hours"),
@@ -672,6 +724,11 @@ def _(
     with open(_path, "w") as _f:
         json.dump(consort, _f, indent=2)
     print(f"CONSORT saved to {_path}")
+
+    from helper import plot_consort
+
+    plot_consort(consort, OUTPUT_DIR / "consort.png")
+    print(f"CONSORT diagram saved to {OUTPUT_DIR / 'consort.png'}")
     return (consort,)
 
 
@@ -682,20 +739,147 @@ def _(consort, pl):
 
 
 @app.cell
-def _(cohort_df):
-    cohort_df
+def _(
+    DATA_DIR,
+    FILETYPE,
+    OUTPUT_PHI,
+    TIMEZONE,
+    cohort_df,
+    pl,
+    strip_tz,
+    vitals_df,
+):
+    from clifpy import MedicationAdminContinuous
+    from clifpy.utils.unit_converter import convert_dose_units_by_med_category
+
+    TARGET_MEDS = [
+        "norepinephrine", "epinephrine", "phenylephrine", "angiotensin",
+        "vasopressin", "dopamine", "dobutamine", "milrinone", "isoproterenol",
+        "cisatracurium", "vecuronium", "rocuronium",
+        "fentanyl", "propofol", "lorazepam", "midazolam",
+        "hydromorphone", "morphine",
+    ]
+
+    PREFERRED_UNITS = {
+        "norepinephrine": "mcg/kg/min",
+        "epinephrine": "mcg/kg/min",
+        "phenylephrine": "mcg/kg/min",
+        "angiotensin": "ng/kg/min",
+        "vasopressin": "u/min",
+        "dopamine": "mcg/kg/min",
+        "dobutamine": "mcg/kg/min",
+        "milrinone": "mcg/kg/min",
+        "isoproterenol": "mcg/kg/min",
+    }
+
+    # 1) Load continuous medication data
+    _mac = MedicationAdminContinuous.from_file(
+        data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE, verbose=False,
+    )
+    _mac_pl = pl.from_pandas(strip_tz(_mac.df))
+    print(f"Raw medication_admin_continuous records: {len(_mac_pl):,}")
+
+    # 2) Filter to cohort hospitalizations
+    _mac_cohort = _mac_pl.join(
+        cohort_df.select("hospitalization_id"),
+        on="hospitalization_id",
+        how="inner",
+    )
+    print(f"After cohort filter: {len(_mac_cohort):,}")
+
+    # 3) Filter to target med_categories
+    _mac_filtered = _mac_cohort.filter(
+        pl.col("med_category").str.to_lowercase().is_in(TARGET_MEDS)
+    )
+    print(f"After med_category filter ({len(TARGET_MEDS)} meds): {len(_mac_filtered):,}")
+    print(f"  Med categories found: {sorted(_mac_filtered['med_category'].unique().to_list())}")
+
+    # 4) Vitals for weight-based unit conversion (loaded upstream)
+    _vitals_pd = strip_tz(vitals_df.to_pandas())
+    print(f"Vitals records for unit conversion: {len(_vitals_pd):,}")
+
+    # 5) Unit conversion (converter works on pandas)
+    _mac_pd = _mac_filtered.to_pandas()
+    _converted_pd, _counts_pd = convert_dose_units_by_med_category(
+        med_df=_mac_pd,
+        vitals_df=_vitals_pd,
+        preferred_units=PREFERRED_UNITS,
+        override=True,
+    )
+
+    # 6) Conversion summary
+    print(f"\nUnit conversion summary:")
+    _status_counts = _converted_pd["_convert_status"].value_counts()
+    for status, count in _status_counts.items():
+        print(f"  {status}: {count:,}")
+
+    # 7) Convert back to polars
+    meds_df = pl.from_pandas(_converted_pd)
+    print(f"\nFinal meds_df: {meds_df.shape[0]:,} rows, {meds_df.shape[1]} cols")
+    meds_df.write_parquet(str(OUTPUT_PHI / "meds_cohort.parquet"))
+    print(f"Saved meds to {OUTPUT_PHI / 'meds_cohort.parquet'}")
     return
 
 
 @app.cell
-def _(adt_df):
-    adt_df
-    return
+def _(
+    DATA_DIR,
+    FILETYPE,
+    OUTPUT_DIR,
+    OUTPUT_PHI,
+    TIMEZONE,
+    cohort_df,
+    pl,
+    strip_tz,
+):
+    from clifpy import PatientAssessments
 
+    _ASSESSMENT_CATS = [
+        "sat_screen_pass_fail", "sat_screen_performed",
+        "sat_delivery_pass_fail", "sat_delivery_performed",
+        "sbt_screen_pass_fail", "sbt_screen_performed",
+        "sbt_delivery_pass_fail", "sbt_delivery_performed",
+        "rass", "gcs_total",
+    ]
 
-@app.cell
-def _(rs_df):
-    rs_df
+    _cohort_ids = cohort_df["hospitalization_id"].to_list()
+    _pa = PatientAssessments.from_file(
+        data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE,
+        filters={"hospitalization_id": _cohort_ids}, verbose=False,
+    )
+    assessments_df = pl.from_pandas(strip_tz(_pa.df)).filter(
+        pl.col("assessment_category").str.to_lowercase().is_in(_ASSESSMENT_CATS)
+    )
+    print("Unique values per category (before conversion):")
+    _quality_rows = []
+    for _cat in _ASSESSMENT_CATS:
+        _sub = assessments_df.filter(pl.col("assessment_category").str.to_lowercase() == _cat)
+        _num = _sub["numerical_value"].drop_nulls().unique().sort().to_list()
+        _catv = _sub["categorical_value"].drop_nulls().unique().sort().to_list()
+        print(f"  {_cat} (numerical): {_num}")
+        print(f"  {_cat} (categorical): {_catv}")
+        _quality_rows.append({"assessment_category": _cat, "numerical_values": ", ".join(str(v) for v in _num), "categorical_values": ", ".join(str(v) for v in _catv)})
+    pl.DataFrame(_quality_rows).write_csv(str(OUTPUT_DIR / "assessment_quality.csv"))
+    print(f"Saved assessment quality to {OUTPUT_DIR / 'assessment_quality.csv'}")
+    # Map categorical pass/fail/yes/no/true/false → 1/0, fill into numerical_value
+    _cat_map = {"pass": 1, "yes": 1, "true": 1, "fail": 0, "no": 0, "false": 0}
+    _mapped = (
+        pl.col("categorical_value")
+        .str.to_lowercase()
+        .replace(_cat_map)
+        .cast(pl.Float64, strict=False)
+    )
+    assessments_df = assessments_df.with_columns(
+        pl.col("numerical_value").fill_null(_mapped).alias("numerical_value"),
+    )
+    print(f"Patient assessments loaded: {len(assessments_df):,}")
+    for _cat in _ASSESSMENT_CATS:
+        _n = assessments_df.filter(
+            pl.col("assessment_category").str.to_lowercase() == _cat
+        ).height
+        print(f"  {_cat}: {_n:,}")
+    assessments_df.write_parquet(str(OUTPUT_PHI / "assessments_cohort.parquet"))
+    print(f"Saved assessments to {OUTPUT_PHI / 'assessments_cohort.parquet'}")
     return
 
 
