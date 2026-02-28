@@ -585,6 +585,24 @@ def _(
         ])
     )
 
+    # Hospital info + ICU location type from first ICU ADT row in the first qualifying ICU stay
+    _icu_info = (
+        adt_df
+        .join(
+            first_icu.select(["hospitalization_id", "icu_in_dttm", "icu_out_dttm"]),
+            on="hospitalization_id",
+            how="inner",
+        )
+        .filter(
+            (pl.col("location_category").str.to_lowercase() == "icu")
+            & (pl.col("in_dttm") >= pl.col("icu_in_dttm"))
+            & (pl.col("in_dttm") <= pl.col("icu_out_dttm"))
+        )
+        .sort(["hospitalization_id", "in_dttm"])
+        .unique(subset=["hospitalization_id"], keep="first")
+        .select(["hospitalization_id", "hospital_id", "hospital_type", "location_type"])
+    )
+
     cohort_df = (
         hosp_final
         .select(["hospitalization_id", "patient_id", "admission_dttm", "discharge_dttm", "age_at_admission", "discharge_category"])
@@ -607,6 +625,7 @@ def _(
         )
         .join(intub_extub_df, on="hospitalization_id", how="left")
         .join(bmi_df, on="hospitalization_id", how="left")
+        .join(_icu_info, on="hospitalization_id", how="left")
         .with_columns(
             ((pl.col("discharge_dttm") - pl.col("admission_dttm")).dt.total_hours()).alias("hospital_los_hours"),
             ((pl.col("first_icu_end") - pl.col("first_icu_start")).dt.total_hours()).alias("first_icu_los_hours"),
@@ -818,7 +837,7 @@ def _(
     print(f"\nFinal meds_df: {meds_df.shape[0]:,} rows, {meds_df.shape[1]} cols")
     meds_df.write_parquet(str(OUTPUT_PHI / "meds_cohort.parquet"))
     print(f"Saved meds to {OUTPUT_PHI / 'meds_cohort.parquet'}")
-    return
+    return (meds_df,)
 
 
 @app.cell
@@ -880,6 +899,17 @@ def _(
         print(f"  {_cat}: {_n:,}")
     assessments_df.write_parquet(str(OUTPUT_PHI / "assessments_cohort.parquet"))
     print(f"Saved assessments to {OUTPUT_PHI / 'assessments_cohort.parquet'}")
+    return
+
+
+@app.cell
+def _(meds_df):
+    meds_df
+    return
+
+
+@app.cell
+def _():
     return
 
 
