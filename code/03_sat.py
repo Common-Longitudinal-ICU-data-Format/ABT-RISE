@@ -4,8 +4,13 @@ __generated_with = "0.20.2"
 app = marimo.App(width="full")
 
 
-### ── Cell 1: Setup & Config ──────────────────────────────────────────
-# Load libraries, read site config, and create the output folder.
+@app.cell
+def _():
+    import marimo as mo
+
+    return
+
+
 @app.cell
 def _():
     import polars as pl
@@ -14,6 +19,7 @@ def _():
     import json
     from pathlib import Path
     from tqdm import tqdm
+    from helper import plot_consort
 
     # Read site-specific config (site name, paths, etc.)
     _config_path = Path(__file__).parent.parent / "clif_config.json"
@@ -27,13 +33,19 @@ def _():
 
     print(f"Site: {SITE_NAME}")
     print(f"Output: {OUTPUT_SAT}")
-    return OUTPUT_PHI, OUTPUT_SAT, SITE_NAME, np, pd, pl, tqdm
+    return (
+        OUTPUT_PHI,
+        OUTPUT_SAT,
+        SITE_NAME,
+        json,
+        np,
+        pd,
+        pl,
+        plot_consort,
+        tqdm,
+    )
 
 
-### ── Cell 2: Load Data ───────────────────────────────────────────────
-# Read the two main input tables:
-#   wide_dataset  – one row per observation (hourly vitals, meds, devices, RASS, etc.)
-#   cohort        – one row per hospitalization (patient-level info, ICU start/end)
 @app.cell
 def _(OUTPUT_PHI, pl):
     wide = pl.read_parquet(OUTPUT_PHI / "wide_dataset.parquet")
@@ -44,360 +56,578 @@ def _(OUTPUT_PHI, pl):
     return cohort, wide
 
 
-### ── Cell 3: Preprocessing ────────────────────────────────────────────
-# Convert to pandas, parse datetimes, and build the main grouping key.
-#
-# Key concept – "vent day":
-#   A clinical day that runs 06:00 → 06:00 (not midnight → midnight).
-#   We shift every timestamp back 6 hours then truncate to the date.
-#   Example: an observation at 02:00 on Jan 2  →  shifted to 20:00 Jan 1  →  vent_day_date = Jan 1.
-#   This aligns with the overnight sedation assessment window (22:00–06:00).
-#
-# hosp_id_day_key:
-#   A unique label for each patient-day, e.g. "20001361_day_1".
-#   Used as the grouping key in all downstream cells.
 @app.cell
-def _(pd, wide):
-    VENT_DAY_ANCHOR_HOUR = 6   # clinical day starts at 06:00
-    MAX_FFILL_OBSERVATIONS = 6
+def _(pl, wide):
+    VENT_DAY_ANCHOR_HOUR = 0   # calendar day (midnight-to-midnight)
 
-    # Convert Polars → Pandas and parse datetime columns
-    df = wide.to_pandas()
-    df["recorded_dttm"] = pd.to_datetime(df["recorded_dttm"])
-    df["first_icu_start"] = pd.to_datetime(df["first_icu_start"])
-    df["first_icu_end"] = pd.to_datetime(df["first_icu_end"])
+    # Ensure datetime columns are Datetime type
+    df = wide.with_columns(
+        pl.col("recorded_dttm").cast(pl.Datetime("us")),
+        pl.col("first_icu_start").cast(pl.Datetime("us")),
+        pl.col("first_icu_end").cast(pl.Datetime("us")),
+    )
 
-    # Shift back 6h, then truncate to date → gives the 06:00-anchored vent-day
-    df["vent_day_date"] = (df["recorded_dttm"] - pd.Timedelta(hours=VENT_DAY_ANCHOR_HOUR)).dt.normalize()
+    # Truncate to date → calendar day grouping
+    df = df.with_columns(
+        (pl.col("recorded_dttm") - pl.duration(hours=VENT_DAY_ANCHOR_HOUR))
+        .dt.truncate("1d")
+        .alias("vent_day_date")
+    )
 
     # Number the vent-days 1, 2, 3… per patient using dense rank
-    # (dense rank = no gaps: if a patient has days Jan 1 & Jan 3, they become day 1 & day 2)
-    df["vent_day_num"] = df.groupby("hospitalization_id")["vent_day_date"].transform(
-        lambda s: s.rank(method="dense").astype(int)
+    df = df.with_columns(
+        pl.col("vent_day_date")
+        .rank("dense")
+        .over("hospitalization_id")
+        .cast(pl.Int64)
+        .alias("vent_day_num")
     )
 
     # Build the grouping key: "20001361_day_1", "20001361_day_2", etc.
-    df["hosp_id_day_key"] = df["hospitalization_id"].astype(str) + "_day_" + df["vent_day_num"].astype(str)
+    df = df.with_columns(
+        pl.concat_str([
+            pl.col("hospitalization_id").cast(pl.Utf8),
+            pl.lit("_day_"),
+            pl.col("vent_day_num").cast(pl.Utf8),
+        ]).alias("hosp_id_day_key")
+    )
 
-    df = df.sort_values(["hospitalization_id", "recorded_dttm"]).reset_index(drop=True)
-    print(f"Preprocessed: {len(df):,} rows, {df['hosp_id_day_key'].nunique():,} hosp-day keys")
+    df = df.sort("hospitalization_id", "recorded_dttm")
+    print(f"Preprocessed: {df.height:,} rows, {df['hosp_id_day_key'].n_unique():,} hosp-day keys")
     return (df,)
 
 
-### ── Cell 4: SAT Eligibility Check ───────────────────────────────────
-# Determines which patient-days qualify for a SAT.
-#
-# A day is "eligible" when ALL THREE conditions are met continuously
-# for >= 4 hours inside the overnight window (22:00 → 06:00):
-#   1. Patient is on invasive mechanical ventilation (IMV)
-#   2. Patient is receiving sedation (min_sedation_dose_2 > 0)
-#   3. Patient is NOT on paralytics (max_paralytics <= 0)
-#
-# Returns one row per eligible patient-day with the exact timestamp
-# when the 4-hour threshold was crossed.
 @app.cell
-def _(pd, tqdm):
-    def process_cohort(df: pd.DataFrame) -> pd.DataFrame:
+def _(df, pl):
+    # All unique patient-days (needed so days with zero overnight rows still appear)
+    _all_keys = df.select("hosp_id_day_key").unique()
+
+    # Filter to overnight window (22:00–06:00), same as the 4h eligibility window
+    _overnight = df.filter(
+        (pl.col("recorded_dttm") >= pl.col("vent_day_date") - pl.duration(hours=2))
+        & (pl.col("recorded_dttm") <= pl.col("vent_day_date") + pl.duration(hours=6))
+    )
+
+    # Per day: check each condition within the overnight window only
+    _overnight_flags = (
+        _overnight.group_by("hosp_id_day_key")
+        .agg(
+            (pl.col("max_paralytics") > 0).any().alias("has_paralytics"),
+            (pl.col("device_category").str.to_lowercase() == "imv").any().alias("has_imv"),
+            (pl.col("min_sedation_dose_2") > 0).any().alias("has_sedation"),
+        )
+    )
+
+    # Left-join onto all days; days with no overnight data → null before fill
+    _day_flags = _all_keys.join(_overnight_flags, on="hosp_id_day_key", how="left")
+
+    # Flag days that had ANY rows in the overnight window (non-null before fill)
+    _day_flags = _day_flags.with_columns(
+        pl.col("has_paralytics").is_not_null().alias("has_overnight_data"),
+    )
+
+    _day_flags = _day_flags.with_columns(
+        pl.col("has_paralytics").fill_null(False),
+        pl.col("has_imv").fill_null(False),
+        pl.col("has_sedation").fill_null(False),
+    )
+
+    # Hierarchical failure reason: no overnight data 1st, then paralytics, IMV, sedation
+    _day_flags = _day_flags.with_columns(
+        pl.when(~pl.col("has_overnight_data")).then(pl.lit("No overnight data"))
+        .when(pl.col("has_paralytics")).then(pl.lit("Paralytics present"))
+        .when(~pl.col("has_imv")).then(pl.lit("No IMV"))
+        .when(~pl.col("has_sedation")).then(pl.lit("No active sedation"))
+        .otherwise(pl.lit("< 4h continuous window"))
+        .alias("eligibility_failure_reason")
+    )
+
+    failure_reason_df = _day_flags.select("hosp_id_day_key", "eligibility_failure_reason")
+
+    # CONSORT step counts: total → overnight → paralytics → IMV → sedation
+    _total = _day_flags.height
+    _n_overnight = _day_flags.filter(pl.col("has_overnight_data")).height
+    _n_no_para = _day_flags.filter(pl.col("has_overnight_data") & ~pl.col("has_paralytics")).height
+    _n_imv = _day_flags.filter(pl.col("has_overnight_data") & ~pl.col("has_paralytics") & pl.col("has_imv")).height
+    _n_sed = _day_flags.filter(
+        pl.col("has_overnight_data") & ~pl.col("has_paralytics") & pl.col("has_imv") & pl.col("has_sedation")
+    ).height
+
+    consort_partial = {
+        "total": _total, "n_overnight": _n_overnight,
+        "n_no_para": _n_no_para, "n_imv": _n_imv, "n_sed": _n_sed,
+    }
+    return consort_partial, failure_reason_df
+
+
+@app.cell
+def _(np, pl, tqdm):
+    def process_cohort(df: pl.DataFrame) -> pl.DataFrame:
         """Find patient-days with >= 4h continuous SAT eligibility in the 22:00-06:00 window."""
-        df = df.sort_values(["hospitalization_id", "recorded_dttm"]).reset_index(drop=True)
-        df = df.copy()
+        df = df.sort("hospitalization_id", "recorded_dttm")
 
         # Mark each row: are all 3 conditions met? (1 = yes, 0 = no)
-        df["all_conditions_check"] = (
-            (df["device_category"].str.lower() == "imv")   # on ventilator
-            & (df["min_sedation_dose_2"] > 0)              # receiving sedation
-            & (df["max_paralytics"] <= 0)                  # no paralytics
-        ).astype(int)
+        df = df.with_columns(
+            (
+                (pl.col("device_category").str.to_lowercase() == "imv")
+                & (pl.col("min_sedation_dose_2") > 0)
+                & (pl.col("max_paralytics") <= 0)
+            ).cast(pl.Int32).alias("all_conditions_check")
+        )
 
         # Only keep days that have at least one IMV observation
-        vented_days = df[df["device_category"].str.lower() == "imv"]["hosp_id_day_key"].unique()
-        df = df[df["hosp_id_day_key"].isin(vented_days)]
+        vented_keys = (
+            df.filter(pl.col("device_category").str.to_lowercase() == "imv")
+            .select("hosp_id_day_key")
+            .unique()
+        )
+        df = df.join(vented_keys, on="hosp_id_day_key", how="semi")
 
-        result = []
+        _4h_us = int(4 * 3600 * 1e6)  # 4 hours in microseconds
+        _22h = np.timedelta64(22, "h")
+        _1d = np.timedelta64(1, "D")
+        _6h = np.timedelta64(6, "h")
+
+        result_hosp = []
+        result_day = []
+        result_time = []
+
         # Loop over each patient
-        for hosp_id, hosp_df in tqdm(df.groupby("hospitalization_id"), desc="SAT eligibility check"):
-            hosp_df = hosp_df.sort_values("recorded_dttm")
-            times = hosp_df["recorded_dttm"].values
+        for (hosp_id,), hosp_df in tqdm(df.group_by("hospitalization_id"), desc="SAT eligibility check"):
+            hosp_df = hosp_df.sort("recorded_dttm")
+            times = hosp_df["recorded_dttm"].to_numpy().astype("datetime64[us]")
+            conditions = hosp_df["all_conditions_check"].to_numpy()
+            vent_days = hosp_df["vent_day_date"].unique().sort().to_numpy().astype("datetime64[us]")
 
             # For each vent-day, look at the overnight window (22:00 → 06:00)
-            for date in hosp_df["vent_day_date"].unique():
+            for date in vent_days:
                 # Build the 8-hour overnight window
-                start_time = date + pd.Timedelta(hours=22) - pd.Timedelta(days=1)  # previous day 22:00
-                end_time = date + pd.Timedelta(hours=6)                            # current day 06:00
+                start_time = date + _22h - _1d   # previous day 22:00
+                end_time = date + _6h             # current day 06:00
                 mask = (times >= start_time) & (times <= end_time)
-                window_df = hosp_df.loc[mask]
+                w_times = times[mask]
+                w_conds = conditions[mask]
 
                 # Skip if no data in window or none of the 3 conditions are ever met
-                if window_df.empty or not window_df["all_conditions_check"].any():
+                if len(w_times) == 0 or not w_conds.any():
                     continue
 
                 # Identify contiguous segments where conditions flip on/off
-                # cumsum on the change-points gives each segment a unique group number
-                window_df = window_df.copy()
-                window_df["condition_met_group"] = (
-                    (window_df["all_conditions_check"] != window_df["all_conditions_check"].shift()).cumsum()
-                )
+                changes = np.concatenate([[True], np.diff(w_conds) != 0])
+                groups = np.cumsum(changes)
 
                 # Look only at segments where all conditions ARE met (==1)
-                valid_segments = window_df[window_df["all_conditions_check"] == 1].groupby("condition_met_group")
-                for _, segment in valid_segments:
-                    segment = segment.sort_values("recorded_dttm").copy()
-                    # Compute how long each consecutive pair of rows spans
-                    segment["duration"] = segment["recorded_dttm"].diff().fillna(pd.Timedelta(seconds=0))
-                    segment["cumulative_duration"] = segment["duration"].cumsum()
+                for g in np.unique(groups[w_conds == 1]):
+                    seg_mask = groups == g
+                    seg_times = w_times[seg_mask]
+
+                    if len(seg_times) < 2:
+                        continue
+
+                    # Cumulative duration from first observation in segment
+                    seg_i = seg_times.astype("datetime64[us]").astype(np.int64)
+                    cum_dur = seg_i - seg_i[0]
 
                     # If this segment lasts >= 4 hours, the day is eligible
-                    if segment["cumulative_duration"].iloc[-1] >= pd.Timedelta(hours=4):
+                    if cum_dur[-1] >= _4h_us:
                         # Record the exact timestamp when we hit 4 hours
-                        event_time_at_4_hours = (
-                            segment[segment["cumulative_duration"] >= pd.Timedelta(hours=4)]
-                            .iloc[0]["recorded_dttm"]
-                        )
-                        result.append({
-                            "hospitalization_id": hosp_id,
-                            "current_day_key": date,
-                            "event_time_at_4_hours": event_time_at_4_hours,
-                        })
+                        hit_idx = np.searchsorted(cum_dur, _4h_us)
+                        result_hosp.append(hosp_id)
+                        result_day.append(date)
+                        result_time.append(seg_times[hit_idx])
                         break  # one qualifying segment is enough for this day
 
-        if not result:
-            return pd.DataFrame(columns=["hospitalization_id", "current_day_key", "event_time_at_4_hours"])
-        return pd.DataFrame(result)
+        if not result_hosp:
+            return pl.DataFrame(schema={
+                "hospitalization_id": df.schema["hospitalization_id"],
+                "current_day_key": df.schema["vent_day_date"],
+                "event_time_at_4_hours": df.schema["recorded_dttm"],
+            })
+        return pl.DataFrame({
+            "hospitalization_id": result_hosp,
+            "current_day_key": np.array(result_day, dtype="datetime64[us]"),
+            "event_time_at_4_hours": np.array(result_time, dtype="datetime64[us]"),
+        })
 
     return (process_cohort,)
 
 
-### ── Cell 5: Mark Eligible Rows ──────────────────────────────────────
-# Merges eligibility results back onto every row and marks:
-#   eligible_event = 1      → the first observation on an eligible day AFTER the 4h threshold
-#   on_vent_and_sedation = 1 → all rows that belong to an eligible day
 @app.cell
-def _(df, np, process_cohort):
+def _(df, failure_reason_df, pl, process_cohort):
     # Run the eligibility check from Cell 4
     result_df = process_cohort(df)
-    print(f"Encounter-days with ≥4h eligibility: {len(result_df):,}")
+    print(f"Encounter-days with ≥4h eligibility: {result_df.height:,}")
 
     # Left-join eligibility info onto every row (non-eligible days get NaN)
-    cohort_work = df.copy()
-    cohort_elig = cohort_work.merge(
-        result_df[["hospitalization_id", "current_day_key", "event_time_at_4_hours"]],
-        how="left",
+    cohort_elig = df.join(
+        result_df.select("hospitalization_id", "current_day_key", "event_time_at_4_hours"),
         left_on=["hospitalization_id", "vent_day_date"],
         right_on=["hospitalization_id", "current_day_key"],
+        how="left",
     )
 
     # Find the FIRST observation on each eligible day that occurs AFTER the 4h mark
-    _mask_valid = cohort_elig["event_time_at_4_hours"].notna()
-    _mask_after = cohort_elig["recorded_dttm"] >= cohort_elig["event_time_at_4_hours"]
-    _eligible_rows = cohort_elig[_mask_valid & _mask_after].copy()
-    _first_eligible_idx = _eligible_rows.groupby(["hospitalization_id", "vent_day_date"])["recorded_dttm"].idxmin()
+    _first_times = (
+        cohort_elig
+        .filter(
+            pl.col("event_time_at_4_hours").is_not_null()
+            & (pl.col("recorded_dttm") >= pl.col("event_time_at_4_hours"))
+        )
+        .group_by("hospitalization_id", "vent_day_date")
+        .agg(pl.col("recorded_dttm").min().alias("_first_eligible_time"))
+    )
 
     # Flag just that first post-threshold row
-    cohort_elig["eligible_event"] = np.nan
-    cohort_elig.loc[_first_eligible_idx, "eligible_event"] = 1
+    cohort_elig = cohort_elig.join(_first_times, on=["hospitalization_id", "vent_day_date"], how="left")
+    cohort_elig = cohort_elig.with_columns(
+        pl.when(pl.col("recorded_dttm") == pl.col("_first_eligible_time"))
+        .then(1.0)
+        .otherwise(None)
+        .alias("eligible_event")
+    )
 
     # Remove flag from the very last observation per patient
     # (can't assess a SAT if there's no follow-up data after it)
-    _last_idxs = cohort_elig.groupby("hospitalization_id")["recorded_dttm"].idxmax()
-    cohort_elig.loc[_last_idxs, "eligible_event"] = np.nan
+    cohort_elig = cohort_elig.with_columns(
+        pl.when(
+            pl.col("recorded_dttm") == pl.col("recorded_dttm").max().over("hospitalization_id")
+        )
+        .then(None)
+        .otherwise(pl.col("eligible_event"))
+        .alias("eligible_event")
+    )
 
     # Mark ALL rows on eligible days so we can filter to them later
-    _eligible_days = cohort_elig.loc[cohort_elig["eligible_event"] == 1, "hosp_id_day_key"].unique()
-    cohort_elig["on_vent_and_sedation"] = cohort_elig["hosp_id_day_key"].isin(_eligible_days).astype(int)
-    cohort_elig = cohort_elig.drop(columns=["current_day_key", "event_time_at_4_hours"], errors="ignore")
+    _eligible_keys = (
+        cohort_elig.filter(pl.col("eligible_event") == 1)
+        .select("hosp_id_day_key")
+        .unique()
+    )
+    cohort_elig = cohort_elig.with_columns(
+        pl.col("hosp_id_day_key").is_in(_eligible_keys["hosp_id_day_key"])
+        .cast(pl.Int32)
+        .alias("on_vent_and_sedation")
+    )
+    cohort_elig = cohort_elig.drop("event_time_at_4_hours", "_first_eligible_time")
 
-    print(f"Eligible hosp-day keys: {cohort_elig[cohort_elig['on_vent_and_sedation'] == 1]['hosp_id_day_key'].nunique():,}")
-    return (cohort_elig,)
+    # Join eligibility failure reason; null out for eligible days
+    cohort_elig = cohort_elig.join(failure_reason_df, on="hosp_id_day_key", how="left")
+    cohort_elig = cohort_elig.with_columns(
+        pl.when(pl.col("on_vent_and_sedation") == 1)
+        .then(pl.lit(None).cast(pl.Utf8))
+        .otherwise(pl.col("eligibility_failure_reason"))
+        .alias("eligibility_failure_reason")
+    )
+
+    n_eligible_days = cohort_elig.filter(pl.col("on_vent_and_sedation") == 1)["hosp_id_day_key"].n_unique()
+    print(f"Eligible hosp-day keys: {n_eligible_days:,}")
+    return cohort_elig, n_eligible_days
 
 
-### ── Cell 6: Evaluate 6 SAT Delivery Flags ───────────────────────────
-# For each eligible day, at each timepoint where sedation stopped,
-# we test 6 different algorithmic definitions of "was a SAT delivered?"
-#
-# The 6 flags:
-#   1. SAT_EHR_delivery              – ALL 6 sedation meds are zero/absent for 30 min
-#   2. SAT_modified_delivery         – only non-opioid meds (propofol/lorazepam/midazolam) zero for 30 min
-#   3. SAT_rass_nonneg_30            – all RASS scores >= 0 (awake) in next 30 min
-#   4. SAT_med_halved_rass_pos       – meds dropped to <= 50% of prior 30-min max AND patient woke up in 45 min
-#   5. SAT_no_meds_rass_pos_45       – no meds for 30 min AND patient woke up in 45 min
-#   6. SAT_rass_first_neg_30_last45  – was sedated before (RASS < 0), then woke up (RASS >= 0) within 45 min
-#
-# All flags require the patient to stay on IMV throughout the 30-min forward window.
 @app.cell
-def _(cohort_elig, np, pd, tqdm):
+def _(cohort_elig, np, pl, tqdm):
     # All 6 sedation medications we track
     _MED_COLS = ["fentanyl", "propofol", "lorazepam", "midazolam", "hydromorphone", "morphine"]
     # Non-opioid subset (used by flag 2)
     _MED_COLS2 = ["propofol", "lorazepam", "midazolam"]
-    # The 6 flag column names
+    # The flag column names
     _FLAG_COLS = [
-        "SAT_EHR_delivery", "SAT_modified_delivery", "SAT_rass_nonneg_30",
-        "SAT_med_halved_rass_pos", "SAT_no_meds_rass_pos_45",
-        "SAT_rass_first_neg_30_last45_nonneg",
+        "SAT_primary_delivery", "SAT_modified_delivery",
     ]
 
     # Keep only rows from eligible days
     vent_eligible = (
-        cohort_elig[cohort_elig["on_vent_and_sedation"] == 1]
-        .sort_values(["hospitalization_id", "recorded_dttm"])
-        .reset_index(drop=True)
-        .copy()
+        cohort_elig.filter(pl.col("on_vent_and_sedation") == 1)
+        .sort("hospitalization_id", "recorded_dttm")
     )
 
-    # Initialize all 6 flag columns as NaN (will be set to 1 where conditions are met)
-    for _f in _FLAG_COLS:
-        vent_eligible[_f] = np.nan
+    # ── Rank sedation stoppages (vectorized) ──
+    # rank_sedation counts cumulative zero-sedation observations per day.
+    # A non-null rank means "sedation was stopped here" → candidate for SAT evaluation.
+    vent_eligible = vent_eligible.with_columns(
+        pl.when(pl.col("min_sedation_dose") == 0)
+        .then(
+            (pl.col("min_sedation_dose") == 0).cast(pl.Int32).cum_sum().over("hosp_id_day_key")
+        )
+        .otherwise(None)
+        .cast(pl.Float64)
+        .alias("rank_sedation"),
 
-    # ── Rank sedation stoppages ──
-    # rank_sedation counts consecutive zero-sedation observations per day.
-    # Example: doses [5, 0, 0, 3, 0] → ranks [NaN, 1, 2, NaN, 1]
-    # A non-NaN rank means "sedation was stopped here" → candidate for SAT evaluation.
-    vent_eligible["rank_sedation"] = np.nan
-    for _key, _grp in tqdm(vent_eligible.groupby("hosp_id_day_key"), desc="Rank sedation"):
-        _zero_mask = _grp["min_sedation_dose"] == 0
-        _ranks = _zero_mask.cumsum() * _zero_mask        # running count, reset to 0 when dose > 0
-        vent_eligible.loc[_grp.index, "rank_sedation"] = _ranks.replace(0, np.nan)
+        pl.when(pl.col("min_sedation_dose_non_ops") == 0)
+        .then(
+            (pl.col("min_sedation_dose_non_ops") == 0).cast(pl.Int32).cum_sum().over("hosp_id_day_key")
+        )
+        .otherwise(None)
+        .cast(pl.Float64)
+        .alias("rank_sedation_non_ops"),
+    )
 
-    # Same thing but only for non-opioid meds
-    vent_eligible["rank_sedation_non_ops"] = np.nan
-    for _key, _grp in tqdm(vent_eligible.groupby("hosp_id_day_key"), desc="Rank sedation (non-opioid)"):
-        _zero_mask = _grp["min_sedation_dose_non_ops"] == 0
-        _ranks = _zero_mask.cumsum() * _zero_mask
-        vent_eligible.loc[_grp.index, "rank_sedation_non_ops"] = _ranks.replace(0, np.nan)
+    # Add row index for joining flag results back
+    vent_eligible = vent_eligible.with_row_index("_row_idx")
 
-    vent_eligible["rass"] = vent_eligible["rass"].astype(float)
+    # ── Main loop: evaluate flags at each sedation-stop timepoint ──
+    _delta30_us = int(30 * 60 * 1e6)  # 30 min in microseconds
+    _flag_results = []
 
-    # ── Main loop: evaluate all 6 flags at each sedation-stop timepoint ──
-    _delta30 = pd.Timedelta(minutes=30)
-    _delta45 = pd.Timedelta(minutes=45)
+    for _key in tqdm(vent_eligible["hosp_id_day_key"].unique().sort().to_list(), desc="Evaluating SAT flags"):
+        _grp = vent_eligible.filter(pl.col("hosp_id_day_key") == _key).sort("recorded_dttm")
+        _n = _grp.height
+        if _n == 0:
+            continue
 
-    for _key, _grp in tqdm(vent_eligible.groupby("hosp_id_day_key"), desc="Evaluating SAT flags (6 methods)"):
-        _grp = _grp.sort_values("recorded_dttm")
-        _idxs = _grp.index
-        _times = _grp["recorded_dttm"].values
-        _ranks = _grp["rank_sedation"].values
+        _row_idxs = _grp["_row_idx"].to_numpy()
+        _times = _grp["recorded_dttm"].to_numpy().astype("datetime64[us]").astype(np.int64)
+        _ranks = _grp["rank_sedation"].to_numpy()
+        _device_cats = _grp["device_category"].to_list()
+        _imv = np.array([str(d).lower() == "imv" if d is not None else False for d in _device_cats])
 
-        for _idx, _cur_time, _rank in zip(_idxs, _times, _ranks):
+        _med_arrs = {}
+        for _med in _MED_COLS:
+            _med_arrs[_med] = _grp[_med].to_numpy().astype(np.float64)
+
+        for i in range(_n):
             # Only evaluate at rows where sedation is stopped (rank is not NaN)
-            if pd.isna(_rank):
+            if np.isnan(_ranks[i]):
                 continue
 
-            # Build three time windows around the current timepoint:
-            _fw30 = _grp[(_grp["recorded_dttm"] >= _cur_time) & (_grp["recorded_dttm"] <= _cur_time + _delta30)]  # forward 30 min
-            _fw45 = _grp[(_grp["recorded_dttm"] >= _cur_time) & (_grp["recorded_dttm"] <= _cur_time + _delta45)]  # forward 45 min
-            _pr30 = _grp[(_grp["recorded_dttm"] >= _cur_time - _delta30) & (_grp["recorded_dttm"] < _cur_time)]   # prior 30 min
+            _cur = _times[i]
+
+            # Build three time windows around the current timepoint
+            _fw30 = (_times >= _cur) & (_times <= _cur + _delta30_us)   # forward 30 min
 
             # Must stay on ventilator for the next 30 min, otherwise skip
-            _imv_ok = (_fw30["device_category"].str.lower() == "imv").all() if not _fw30.empty else False
-            if not _imv_ok:
+            if not _imv[_fw30].all():
                 continue
 
-            _flags_set = {}
+            _flags = {}
 
-            # Flag 1: SAT_EHR_delivery — all 6 meds are zero or absent for next 30 min
-            _meds_ok = (_fw30[_MED_COLS].isna() | (_fw30[_MED_COLS] == 0)).all().all()
+            # Flag 1: SAT_primary_delivery — all 6 meds are zero or absent for next 30 min
+            _meds_ok = True
+            for _med in _MED_COLS:
+                _v = _med_arrs[_med][_fw30]
+                if not np.all(np.isnan(_v) | (_v == 0)):
+                    _meds_ok = False
+                    break
             if _meds_ok:
-                _flags_set["SAT_EHR_delivery"] = 1
+                _flags["SAT_primary_delivery"] = 1.0
 
             # Flag 2: SAT_modified_delivery — non-opioid meds only are zero for next 30 min
-            _meds2_ok = (_fw30[_MED_COLS2].isna() | (_fw30[_MED_COLS2] == 0)).all().all()
+            _meds2_ok = True
+            for _med in _MED_COLS2:
+                _v = _med_arrs[_med][_fw30]
+                if not np.all(np.isnan(_v) | (_v == 0)):
+                    _meds2_ok = False
+                    break
             if _meds2_ok:
-                _flags_set["SAT_modified_delivery"] = 1
+                _flags["SAT_modified_delivery"] = 1.0
 
-            # Gather RASS scores for the time windows
-            _rass30 = _fw30["rass"].dropna()                                  # RASS in next 30 min
-            _rass45 = _fw45["rass"].dropna()                                  # RASS in next 45 min
-            _rass45_ok = not _rass45.empty and _rass45.iloc[-1] >= 0          # last RASS in 45 min is non-negative (awake)
-            _rass30_pre = _pr30["rass"].dropna()                              # RASS in prior 30 min
+            if _flags:
+                _row = {"_row_idx": int(_row_idxs[i])}
+                for _f in _FLAG_COLS:
+                    _row[_f] = _flags.get(_f, None)
+                _flag_results.append(_row)
 
-            # Flag 3: SAT_rass_nonneg_30 — patient stayed awake (RASS >= 0) for next 30 min
-            if not _rass30.empty and (_rass30 >= 0).all():
-                _flags_set["SAT_rass_nonneg_30"] = 1
+    # Build flag result DataFrame and join back
+    if _flag_results:
+        _flag_df = pl.DataFrame(
+            _flag_results,
+            schema={"_row_idx": pl.UInt32, **{c: pl.Float64 for c in _FLAG_COLS}},
+        )
+        vent_eligible = vent_eligible.join(_flag_df, on="_row_idx", how="left")
+    else:
+        vent_eligible = vent_eligible.with_columns(
+            *[pl.lit(None).cast(pl.Float64).alias(_f) for _f in _FLAG_COLS]
+        )
 
-            # Flag 4: SAT_med_halved_rass_pos — meds dropped to <= 50% of prior max AND patient woke up
-            if not _pr30.empty and not _fw30.empty:
-                _half_max = _pr30[_MED_COLS].max() * 0.5  # 50% of the max dose in the prior 30 min
-                _halved_ok = True
-                for _med in _MED_COLS:
-                    _vals = _fw30[_med].dropna()
-                    _vals = _vals[_vals != 0]  # ignore zeros (med not running)
-                    if not _vals.empty and not (_vals <= _half_max[_med]).all():
-                        _halved_ok = False
-                        break
-                if _halved_ok and _rass45_ok:
-                    _flags_set["SAT_med_halved_rass_pos"] = 1
-
-            # Flag 5: SAT_no_meds_rass_pos_45 — no meds for 30 min AND patient woke up in 45 min
-            if _meds_ok and _rass45_ok:
-                _flags_set["SAT_no_meds_rass_pos_45"] = 1
-
-            # Flag 6: SAT_rass_first_neg_30_last45_nonneg — was sedated (RASS<0), then woke up (RASS>=0)
-            if not _rass30_pre.empty and not _rass45.empty:
-                if _rass30_pre.iloc[0] < 0 and _rass45.iloc[-1] >= 0:
-                    _flags_set["SAT_rass_first_neg_30_last45_nonneg"] = 1
-
-            # Write the flags to the dataframe
-            for _f, _val in _flags_set.items():
-                vent_eligible.at[_idx, _f] = _val
+    vent_eligible = vent_eligible.drop("_row_idx")
 
     sat_flag_cols = _FLAG_COLS
     return sat_flag_cols, vent_eligible
 
 
-### ── Cell 7: Day-Level Aggregation ───────────────────────────────────
-# Collapse row-level flags → one row per patient-day.
-# For each flag, take max() across all rows in that day (if ANY row was flagged, the day is flagged).
-# Also build the "ground truth" column from EHR flowsheets.
 @app.cell
-def _(cohort_elig, np, pl, sat_flag_cols, vent_eligible):
-    # If this site has no RASS data at all, zero out the 4 RASS-based flags
-    if cohort_elig["rass"].nunique() <= 1:
-        for _f in ["SAT_rass_nonneg_30", "SAT_med_halved_rass_pos",
-                    "SAT_no_meds_rass_pos_45", "SAT_rass_first_neg_30_last45_nonneg"]:
-            vent_eligible[_f] = 0
-        print("Site has no RASS — RASS-based flags set to 0.")
-
-    cohort_with_delivery = vent_eligible.copy()
+def _(cohort, cohort_elig, pl, sat_flag_cols, vent_eligible):
+    cohort_with_delivery = vent_eligible
 
     # Aggregate: for each hosp_id_day_key, take the MAX of each flag column
     # (so if any single row in a day had flag=1, the whole day gets flag=1)
-    _max_cols = [
-        "sat_screen_pass_fail", "sat_delivery_pass_fail",
-        "eligible_event",
-    ] + sat_flag_cols
-    _agg_pl = (
-        pl.from_pandas(cohort_with_delivery[["hosp_id_day_key"] + _max_cols])
+
+    # Step 1: ALL days — base columns from cohort_elig
+    _gt_cols = ["sat_screen_pass_fail", "sat_screen_performed", "sat_delivery_pass_fail", "sat_delivery_performed"]
+    _base_cols = _gt_cols + ["eligible_event"]
+    _all_days = (
+        cohort_elig.select(["hosp_id_day_key"] + _base_cols)
         .group_by("hosp_id_day_key")
-        .agg([pl.col(c).max().alias(c) for c in _max_cols])
-        .sort("hosp_id_day_key")
-    )
-    df_grouped = _agg_pl.to_pandas()
-
-    # Build the ground truth: a day counts as "delivered" if the EHR flowsheet
-    # recorded a screen pass OR delivery pass, AND the day was eligible
-    df_grouped["sat_flowsheet_delivery_flag"] = np.where(
-        ((df_grouped["sat_screen_pass_fail"] == 1) | (df_grouped["sat_delivery_pass_fail"] == 1))
-        & (df_grouped["eligible_event"] == 1),
-        1, np.nan,
+        .agg([pl.col(c).max().alias(c) for c in _base_cols])
     )
 
-    print(f"Day-level aggregated: {len(df_grouped):,} hosp-days")
-    for _col in sat_flag_cols + ["sat_flowsheet_delivery_flag"]:
-        _n = (df_grouped[_col] == 1).sum()
+    # --- Vent-day filter ---
+    # Condition 1: day is on or after intubation (calendar date)
+    _day_info = (
+        cohort_elig.select("hosp_id_day_key", "hospitalization_id", "vent_day_date")
+        .unique(subset=["hosp_id_day_key"])
+        .join(
+            cohort.select("hospitalization_id", "intubation_time"),
+            on="hospitalization_id",
+            how="left",
+        )
+    )
+    _post_intub_keys = (
+        _day_info.filter(
+            pl.col("intubation_time").dt.truncate("1d") <= pl.col("vent_day_date")
+        )
+        .select("hosp_id_day_key")
+    )
+
+    # Condition 2: IMV charted in overnight window (prev day 22:00 – today 06:00)
+    # Cross-day join — observations at 22:00-23:59 are in the previous day's group
+    # but need to count for today's vent-day check
+    _imv_obs = (
+        cohort_elig.filter(pl.col("device_category").str.to_lowercase() == "imv")
+        .select("hospitalization_id", "recorded_dttm")
+    )
+    _day_keys = (
+        cohort_elig.select("hosp_id_day_key", "hospitalization_id", "vent_day_date")
+        .unique(subset=["hosp_id_day_key"])
+    )
+    _imv_day_keys = (
+        _day_keys.join(_imv_obs, on="hospitalization_id", how="inner")
+        .filter(
+            (pl.col("recorded_dttm") >= (pl.col("vent_day_date") - pl.duration(hours=2)))
+            & (pl.col("recorded_dttm") <= (pl.col("vent_day_date") + pl.duration(hours=6)))
+        )
+        .select("hosp_id_day_key").unique()
+    )
+
+    # Vent day = both conditions met
+    _vent_day_keys = _post_intub_keys.join(_imv_day_keys, on="hosp_id_day_key", how="semi")
+    _all_days = _all_days.join(_vent_day_keys, on="hosp_id_day_key", how="semi")
+
+    # Step 2: Eligible days only — SAT flag columns from cohort_with_delivery
+    _flag_agg = (
+        cohort_with_delivery.select(["hosp_id_day_key"] + sat_flag_cols)
+        .group_by("hosp_id_day_key")
+        .agg([pl.col(c).max().alias(c) for c in sat_flag_cols])
+    )
+
+    # Step 3: Left-join flags onto all days
+    df_grouped = _all_days.join(_flag_agg, on="hosp_id_day_key", how="left").sort("hosp_id_day_key")
+
+    df_grouped = df_grouped.with_columns(
+        pl.when(pl.col("eligible_event") == 1)
+        .then(True)
+        .otherwise(False)
+        .alias("is_eligible")
+    )
+
+    # Build the ground truth: a day counts as "delivered" if ANY of the 4 EHR
+    # flowsheet columns is 1, AND the day was eligible
+    df_grouped = df_grouped.with_columns(
+        pl.when(
+            (
+                (pl.col("sat_screen_pass_fail") == 1)
+                | (pl.col("sat_screen_performed") == 1)
+                | (pl.col("sat_delivery_pass_fail") == 1)
+                | (pl.col("sat_delivery_performed") == 1)
+            )
+            & (pl.col("eligible_event") == 1)
+        )
+        .then(1.0)
+        .otherwise(None)
+        .alias("sat_ground_truth")
+    )
+
+    # ── Delivery failure reasons ──
+    # Did sedation ever stop on this day?
+    _sed_stopped = (
+        vent_eligible.group_by("hosp_id_day_key").agg(
+            pl.col("rank_sedation").is_not_null().any().alias("_ehr_stopped"),
+            pl.col("rank_sedation_non_ops").is_not_null().any().alias("_mod_stopped"),
+        )
+    )
+
+    df_grouped = df_grouped.join(_sed_stopped, on="hosp_id_day_key", how="left")
+    df_grouped = df_grouped.with_columns(
+        # EHR delivery failure
+        pl.when(pl.col("SAT_primary_delivery") == 1).then(None)
+        .when(pl.col("eligible_event").is_null()).then(None)
+        .when(pl.col("_ehr_stopped").not_()).then(pl.lit("No sedation stoppage"))
+        .otherwise(pl.lit("Meds not zero for 30min or lost IMV"))
+        .alias("SAT_primary_delivery_failure"),
+        # Modified delivery failure
+        pl.when(pl.col("SAT_modified_delivery") == 1).then(None)
+        .when(pl.col("eligible_event").is_null()).then(None)
+        .when(pl.col("_mod_stopped").not_()).then(pl.lit("No non-opioid sedation stoppage"))
+        .otherwise(pl.lit("Non-opioid meds not zero for 30min or lost IMV"))
+        .alias("SAT_modified_delivery_failure"),
+    ).drop("_ehr_stopped", "_mod_stopped")
+
+    # ── Join eligibility failure reason (one per day) ──
+    _elig_reason = (
+        cohort_elig.select("hosp_id_day_key", "eligibility_failure_reason")
+        .group_by("hosp_id_day_key").agg(pl.col("eligibility_failure_reason").first())
+    )
+    df_grouped = df_grouped.join(_elig_reason, on="hosp_id_day_key", how="left")
+
+    print(f"Day-level aggregated: {df_grouped.height:,} hosp-days")
+    for _col in sat_flag_cols + ["sat_ground_truth"]:
+        _n = df_grouped.filter(pl.col(_col) == 1).height
         print(f"  {_col}: {_n:,} days flagged")
     return cohort_with_delivery, df_grouped
 
 
-### ── Cell 8: Concordance Analysis ────────────────────────────────────
-# Compares each of the 6 algorithmic flags against the EHR flowsheet ground truth.
-# For each flag it computes:
-#   - Confusion matrix (TP, FP, FN, TN)
-#   - Accuracy, precision, recall, F1, specificity
-#   - Cohen's Kappa with bootstrapped 95% CI
-#   - Landis-Koch interpretation (Poor → Almost Perfect)
-# Saves a confusion matrix plot (PNG) and a summary CSV.
 @app.cell
-def _(OUTPUT_SAT, cohort_elig, df_grouped, np, pd, sat_flag_cols):
+def _(
+    OUTPUT_SAT,
+    SITE_NAME,
+    consort_partial,
+    df_grouped,
+    json,
+    n_eligible_days,
+    pl,
+    plot_consort,
+):
+    _n_elig = n_eligible_days
+    _n_lt4h = max(0, consort_partial["n_sed"] - _n_elig)
+
+    consort_sat = [
+        {"step": 0, "description": "Total vent days",
+         "remaining": consort_partial["total"], "excluded": 0, "reason": None},
+        {"step": 1, "description": "Patient-days checked (22:00–06:00)",
+         "remaining": consort_partial["n_overnight"],
+         "excluded": consort_partial["total"] - consort_partial["n_overnight"],
+         "reason": "No overnight data"},
+        {"step": 2, "description": "Days with no paralytics (22:00–06:00)",
+         "remaining": consort_partial["n_no_para"],
+         "excluded": consort_partial["n_overnight"] - consort_partial["n_no_para"],
+         "reason": "Paralytics present"},
+        {"step": 3, "description": "Days with IMV (22:00–06:00)",
+         "remaining": consort_partial["n_imv"],
+         "excluded": consort_partial["n_no_para"] - consort_partial["n_imv"],
+         "reason": "No IMV"},
+        {"step": 4, "description": "Days with active sedation (22:00–06:00)",
+         "remaining": consort_partial["n_sed"],
+         "excluded": consort_partial["n_imv"] - consort_partial["n_sed"],
+         "reason": "No active sedation"},
+        {"step": 5, "description": "≥4h continuous eligibility (22:00–06:00)",
+         "remaining": _n_elig,
+         "excluded": _n_lt4h, "reason": "< 4h continuous eligibility"},
+    ]
+
+    with open(OUTPUT_SAT / f"consort_sat_{SITE_NAME}.json", "w") as _f:
+        json.dump(consort_sat, _f, indent=2)
+    plot_consort(consort_sat, OUTPUT_SAT / f"consort_sat_{SITE_NAME}.png")
+
+    # Delivery sub-analysis print
+    _n_ehr = df_grouped.filter(pl.col("SAT_primary_delivery") == 1).height
+    _n_mod = df_grouped.filter(pl.col("SAT_modified_delivery") == 1).height
+    print(f"SAT CONSORT saved. Eligible days: {_n_elig:,}")
+    print(f"  EHR delivery: {_n_ehr:,}  |  Modified delivery: {_n_mod:,}")
+    return
+
+
+@app.cell
+def _(OUTPUT_SAT, df_grouped, np, pd, pl, sat_flag_cols):
     from sklearn.metrics import cohen_kappa_score, confusion_matrix
     import matplotlib.pyplot as plt
     from matplotlib import rcParams
@@ -427,21 +657,18 @@ def _(OUTPUT_SAT, cohort_elig, df_grouped, np, pd, sat_flag_cols):
         elif kappa < 0.81: return "Substantial"
         return "Almost Perfect"
 
-    # Fill NaN flags with 0 for comparison (NaN = "not flagged")
-    _con_df = df_grouped.copy()
-    _fill = sat_flag_cols + ["sat_flowsheet_delivery_flag"]
-    for _c in _fill:
-        _con_df[_c] = _con_df[_c].fillna(0)
+    # Fill null flags with 0 in Polars, then convert to pandas once for sklearn/matplotlib
+    _fill_cols = sat_flag_cols + ["sat_ground_truth"]
+    _con_df = (
+        df_grouped.with_columns([pl.col(c).fill_null(0) for c in _fill_cols])
+        .to_pandas()
+    )
 
-    _has_rass = cohort_elig["rass"].nunique() > 1
     _metrics_list = []
 
     # Compare each algorithmic flag against the flowsheet ground truth
     for _col in sat_flag_cols:
-        # Skip RASS-based flags if site has no RASS data
-        if "rass" in _col and not _has_rass:
-            continue
-        _y_true = _con_df["sat_flowsheet_delivery_flag"]  # ground truth (from EHR flowsheet)
+        _y_true = _con_df["sat_ground_truth"]  # ground truth (from EHR flowsheet)
         _y_pred = _con_df[_col]                            # algorithmic prediction
 
         # Compute confusion matrix and standard metrics
@@ -490,10 +717,6 @@ def _(OUTPUT_SAT, cohort_elig, df_grouped, np, pd, sat_flag_cols):
     return
 
 
-### ── Cell 9: Hospital-Level Summary ──────────────────────────────────
-# Produces a summary table with counts and percentages of each flag
-# broken down by hospital (if multi-hospital site) or overall.
-# Saved as sat_stats_{site_name}.csv
 @app.cell
 def _(
     OUTPUT_SAT,
@@ -501,62 +724,79 @@ def _(
     cohort,
     cohort_with_delivery,
     df_grouped,
-    pd,
+    pl,
     sat_flag_cols,
 ):
-    # Try to get hospital_id from cohort (multi-hospital sites have this column)
-    _hosp_ids = cohort.select("hospitalization_id", "hospital_id").unique().to_pandas() if "hospital_id" in cohort.columns else None
+    _all_flags = sat_flag_cols + ["sat_ground_truth"]
 
-    if _hosp_ids is not None:
-        # Multi-hospital: summarize per hospital
-        _final = df_grouped.copy()
-        _hid = cohort_with_delivery[["hospitalization_id", "hosp_id_day_key"]].drop_duplicates()
-        _final = _final.merge(_hid, on="hosp_id_day_key", how="left")
-        _final = _final.merge(_hosp_ids, on="hospitalization_id", how="left")
+    if "hospital_id" in cohort.columns:
+        # Multi-hospital: join hospital_id onto df_grouped, then summarize per hospital
+        _hosp_ids = cohort.select("hospitalization_id", "hospital_id").unique()
+        _hid = cohort_with_delivery.select("hospitalization_id", "hosp_id_day_key").unique()
+        _final = df_grouped.join(_hid, on="hosp_id_day_key", how="left")
+        _final = _final.join(_hosp_ids, on="hospitalization_id", how="left")
 
-        _rows = []
-        for _hosp in _final["hospital_id"].dropna().unique():
-            _sub = _final[_final["hospital_id"] == _hosp]
-            _eligible_n = int((_sub["eligible_event"] == 1).sum())
-            _row = {"Site_Hospital": f"{SITE_NAME}_{_hosp}", "eligible_event_count": _eligible_n}
-            # For each flag, compute count and percentage of eligible days
-            for _flag in sat_flag_cols + ["sat_flowsheet_delivery_flag"]:
-                _n = int((_sub[_flag] == 1).sum())
-                _row[f"{_flag}_count"] = _n
-                _row[f"pct_{_flag}"] = round(_n / _eligible_n * 100, 2) if _eligible_n > 0 else 0.0
-            _rows.append(_row)
-        hospital_summary = pd.DataFrame(_rows)
+        _agg_exprs = [
+            (pl.col("eligible_event") == 1).sum().cast(pl.Int64).alias("eligible_event_count"),
+        ]
+        for _flag in _all_flags:
+            _agg_exprs.append(
+                (pl.col(_flag) == 1).sum().cast(pl.Int64).alias(f"{_flag}_count")
+            )
+
+        hospital_summary = (
+            _final.filter(pl.col("hospital_id").is_not_null())
+            .group_by("hospital_id")
+            .agg(_agg_exprs)
+        )
+        hospital_summary = hospital_summary.with_columns(
+            pl.concat_str([pl.lit(SITE_NAME + "_"), pl.col("hospital_id").cast(pl.Utf8)]).alias("Site_Hospital"),
+        )
+        for _flag in _all_flags:
+            hospital_summary = hospital_summary.with_columns(
+                pl.when(pl.col("eligible_event_count") > 0)
+                .then((pl.col(f"{_flag}_count") / pl.col("eligible_event_count") * 100).round(2))
+                .otherwise(0.0)
+                .alias(f"pct_{_flag}")
+            )
     else:
         # Single-site: one summary row for the whole site
-        _eligible_n = int((df_grouped["eligible_event"] == 1).sum())
+        _eligible_n = df_grouped.filter(pl.col("eligible_event") == 1).height
         _row = {"Site_Hospital": SITE_NAME, "eligible_event_count": _eligible_n}
-        for _flag in sat_flag_cols + ["sat_flowsheet_delivery_flag"]:
-            _n = int((df_grouped[_flag] == 1).sum())
+        for _flag in _all_flags:
+            _n = df_grouped.filter(pl.col(_flag) == 1).height
             _row[f"{_flag}_count"] = _n
             _row[f"pct_{_flag}"] = round(_n / _eligible_n * 100, 2) if _eligible_n > 0 else 0.0
-        hospital_summary = pd.DataFrame([_row])
+        hospital_summary = pl.DataFrame([_row])
 
-    hospital_summary.to_csv(OUTPUT_SAT / f"sat_stats_{SITE_NAME}.csv", index=False)
-    print(hospital_summary.T)
+    hospital_summary.write_csv(OUTPUT_SAT / f"sat_stats_{SITE_NAME}.csv")
+    print(hospital_summary.to_pandas().T)
     return
 
 
-### ── Cell 10: Save Day-Level Output ──────────────────────────────────
-# Write the day-level aggregated results to a parquet file for downstream use.
 @app.cell
-def _(OUTPUT_SAT, df_grouped, pl):
-    _out = pl.from_pandas(df_grouped)
+def _(OUTPUT_SAT, df_grouped):
     _path = OUTPUT_SAT / "sat_day_level.parquet"
-    _out.write_parquet(str(_path))
-    print(f"Saved: {_path} ({_out.height:,} rows x {_out.width} cols)")
+    df_grouped.write_parquet(str(_path))
+    print(f"Saved: {_path} ({df_grouped.height:,} rows x {df_grouped.width} cols)")
     return
 
 
-### ── Cell 11: Display ────────────────────────────────────────────────
-# Show the day-level table in the Marimo notebook UI.
+@app.cell
+def _(df_grouped):
+    df_grouped['eligibility_failure_reason'].value_counts()
+    return
+
+
 @app.cell
 def _(df_grouped):
     df_grouped
+    return
+
+
+@app.cell
+def _(df):
+    df
     return
 
 

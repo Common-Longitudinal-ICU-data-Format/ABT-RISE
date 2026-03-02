@@ -335,7 +335,14 @@ def _(assess_wide, cohort, meds_wide, pl, resp_df, spo2_df):
         print(f"  {col:30s} {_n:>10,} ({_pct:5.1f}%)")
 
     # Forward-fill within each patient (all columns except device_name, mode_name)
-    _no_fill = {"hospitalization_id", "recorded_dttm", "device_name", "mode_name", "icu_day"}
+    _no_fill = {
+        "hospitalization_id", "recorded_dttm", "device_name", "mode_name", "icu_day",
+        # SAT/SBT flowsheet flags are point-in-time; forward-fill bleeds across days
+        "sat_screen_pass_fail", "sat_screen_performed",
+        "sat_delivery_pass_fail", "sat_delivery_performed",
+        "sbt_screen_pass_fail", "sbt_screen_performed",
+        "sbt_delivery_pass_fail", "sbt_delivery_performed",
+    }
     _fill_cols = [c for c in wide.columns if c not in _no_fill]
 
     wide = wide.with_columns(
