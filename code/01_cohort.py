@@ -837,7 +837,7 @@ def _(
     print(f"\nFinal meds_df: {meds_df.shape[0]:,} rows, {meds_df.shape[1]} cols")
     meds_df.write_parquet(str(OUTPUT_PHI / "meds_cohort.parquet"))
     print(f"Saved meds to {OUTPUT_PHI / 'meds_cohort.parquet'}")
-    return (meds_df,)
+    return
 
 
 @app.cell
@@ -903,13 +903,8 @@ def _(
 
 
 @app.cell
-def _(meds_df):
-    meds_df
-    return
-
-
-@app.cell
-def _():
+def _(cohort_df):
+    cohort_df
     return
 
 
