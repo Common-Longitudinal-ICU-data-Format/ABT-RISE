@@ -7,3 +7,4 @@ output_phi/
 output_to_share/
 
 *.pyc
+*.py.json
