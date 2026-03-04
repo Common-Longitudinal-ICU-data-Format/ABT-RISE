@@ -212,11 +212,11 @@ def _(DATA_DIR, FILETYPE, TIMEZONE, icu_24h, pl, strip_tz):
     _rs = RespiratorySupport.from_file(
         data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE, verbose=False,
     )
-    _rs_all = pl.from_pandas(strip_tz(_rs.df))
+    rs_all_df = pl.from_pandas(strip_tz(_rs.df))
 
     # Join with ALL qualifying ICU stays (>= 24h), not just the first
     rs_df = (
-        _rs_all
+        rs_all_df
         .join(
             icu_24h.select(["hospitalization_id", "icu_in_dttm", "icu_out_dttm"]),
             on="hospitalization_id",
@@ -228,14 +228,24 @@ def _(DATA_DIR, FILETYPE, TIMEZONE, icu_24h, pl, strip_tz):
         )
     )
     print(f"Respiratory support records in qualifying ICU windows: {len(rs_df):,}")
-    return (rs_df,)
+    return rs_all_df, rs_df
 
 
 @app.cell
-def _(hosp_24h, icu_24h, pl, rs_df):
-    # --- Exclusion: tracheostomy == 1 at any point in ICU windows ---
+def _(hosp_24h, icu_24h, pl, rs_all_df, rs_df, timedelta):
+    # --- Exclusion: tracheostomy == 1 in first 24h of hospital admission ---
     _trach_ids = (
-        rs_df.filter(pl.col("tracheostomy") == 1)
+        rs_all_df
+        .join(
+            hosp_24h.select(["hospitalization_id", "admission_dttm"]),
+            on="hospitalization_id",
+            how="inner",
+        )
+        .filter(
+            (pl.col("recorded_dttm") >= pl.col("admission_dttm"))
+            & (pl.col("recorded_dttm") <= pl.col("admission_dttm") + timedelta(hours=24))
+        )
+        .filter(pl.col("tracheostomy") == 1)
         .select("hospitalization_id")
         .unique()
     )
@@ -488,7 +498,7 @@ def _(hosp_final, pl, resp_wf):
     print(f"Intubations: {intub_extub_df.height:,}")
     print(f"Extubations: {intub_extub_df.filter(pl.col('extubation_time').is_not_null()).height:,}")
     print(f"No extubation detected: {n_excluded_no_extub:,}")
-    return intub_extub_df, n_excluded_no_extub
+    return (intub_extub_df,)
 
 
 @app.cell
@@ -636,9 +646,6 @@ def _(
         )
     )
 
-    # Exclude hospitalizations with no extubation detected before ICU end
-    cohort_df = cohort_df.filter(pl.col("extubation_time").is_not_null())
-
     cohort_df.write_parquet(str(OUTPUT_PHI / "cohort.parquet"))
     print(f"Cohort saved to {OUTPUT_PHI / 'cohort.parquet'}")
     print(f"Shape: {cohort_df.shape}, Columns: {cohort_df.columns}")
@@ -658,7 +665,6 @@ def _(
     n_excluded_age,
     n_excluded_collar,
     n_excluded_dates,
-    n_excluded_no_extub,
     n_excluded_no_icu,
     n_excluded_no_imv,
     n_excluded_null_out,
@@ -711,10 +717,10 @@ def _(
         },
         {
             "step": 6,
-            "description": "No tracheostomy in ICU stays",
+            "description": "No tracheostomy in first 24h of admission",
             "remaining": len(hosp_24h) - n_excluded_trach,
             "excluded": n_excluded_trach,
-            "reason": "Tracheostomy recorded during ICU stay",
+            "reason": "Tracheostomy in first 24 hours of admission",
         },
         {
             "step": 7,
@@ -729,13 +735,6 @@ def _(
             "remaining": len(hosp_final),
             "excluded": n_excluded_no_imv,
             "reason": "No IMV device in any ICU stay >= 24h",
-        },
-        {
-            "step": 9,
-            "description": "Extubation detected before ICU end",
-            "remaining": len(hosp_final) - n_excluded_no_extub,
-            "excluded": n_excluded_no_extub,
-            "reason": "No extubation detected before ICU end",
         },
     ]
 

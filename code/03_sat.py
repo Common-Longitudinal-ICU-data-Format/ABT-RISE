@@ -30,15 +30,19 @@ def _():
     DATA_DIR = _cfg["data_directory"]
     TIMEZONE = _cfg.get("timezone", None)
     OUTPUT_PHI = Path(__file__).parent.parent / "output_phi"
-    OUTPUT_SAT = OUTPUT_PHI / "sat_standard"  # all SAT outputs go here
+    OUTPUT_SAT = OUTPUT_PHI / "sat_standard"  # row-level PHI data
     OUTPUT_SAT.mkdir(parents=True, exist_ok=True)
+    OUTPUT_SHARE = Path(__file__).parent.parent / "output_to_share" / "sat_standard"
+    OUTPUT_SHARE.mkdir(parents=True, exist_ok=True)
 
     print(f"Site: {SITE_NAME}")
-    print(f"Output: {OUTPUT_SAT}")
+    print(f"Output PHI: {OUTPUT_SAT}")
+    print(f"Output shared: {OUTPUT_SHARE}")
     return (
         DATA_DIR,
         OUTPUT_PHI,
         OUTPUT_SAT,
+        OUTPUT_SHARE,
         Path,
         SITE_NAME,
         TIMEZONE,
@@ -601,7 +605,7 @@ def _(cohort, cohort_elig, pl, sat_flag_cols, sat_time_cols, vent_eligible):
 
 
 @app.cell
-def _(DATA_DIR, OUTPUT_SAT, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
+def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
     from clifpy.utils.comorbidity import calculate_cci
     from clifpy.utils.sofa_polars import compute_sofa_polars
 
@@ -760,14 +764,14 @@ def _(DATA_DIR, OUTPUT_SAT, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
         "SAT Ineligible": [_inel.get(c, "—") for c in _chars],
     })
 
-    table1.to_csv(OUTPUT_SAT / "table1.csv", index=False)
+    table1.to_csv(OUTPUT_SHARE / "table1.csv", index=False)
     print(table1.to_string(index=False))
     return
 
 
 @app.cell
 def _(
-    OUTPUT_SAT,
+    OUTPUT_SHARE,
     SITE_NAME,
     consort_partial,
     df_grouped,
@@ -795,9 +799,9 @@ def _(
          "excluded": _n_not_elig, "reason": "Not eligible"},
     ]
 
-    with open(OUTPUT_SAT / f"consort_sat_{SITE_NAME}.json", "w") as _f:
+    with open(OUTPUT_SHARE / f"consort_sat_{SITE_NAME}.json", "w") as _f:
         json.dump(consort_sat, _f, indent=2)
-    plot_consort(consort_sat, OUTPUT_SAT / f"consort_sat_{SITE_NAME}.png")
+    plot_consort(consort_sat, OUTPUT_SHARE / f"consort_sat_{SITE_NAME}.png")
 
     # Delivery sub-analysis print
     _n_ehr = df_grouped.filter(pl.col("SAT_primary_delivery") == 1).height
@@ -808,7 +812,7 @@ def _(
 
 
 @app.cell
-def _(OUTPUT_SAT, df_grouped, np, pd, pl, sat_flag_cols):
+def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sat_flag_cols):
     from sklearn.metrics import cohen_kappa_score, confusion_matrix
     import matplotlib.pyplot as plt
     from matplotlib import rcParams
@@ -880,7 +884,7 @@ def _(OUTPUT_SAT, df_grouped, np, pd, pl, sat_flag_cols):
                          ha="center", va="center",
                          color="white" if _cm[_i, _j] > _cm.max() / 2 else "black")
         _fig.tight_layout()
-        _fig.savefig(OUTPUT_SAT / f"confusion_matrix_{_col}.png", bbox_inches="tight", dpi=300)
+        _fig.savefig(OUTPUT_SHARE / f"confusion_matrix_{_col}.png", bbox_inches="tight", dpi=300)
         plt.close(_fig)
 
         _metrics_list.append({
@@ -893,14 +897,14 @@ def _(OUTPUT_SAT, df_grouped, np, pd, pl, sat_flag_cols):
 
     # Save all metrics to CSV
     concordance_df = pd.DataFrame(_metrics_list)
-    concordance_df.to_csv(OUTPUT_SAT / "delivery_concordance_summary.csv", index=False)
+    concordance_df.to_csv(OUTPUT_SHARE / "delivery_concordance_summary.csv", index=False)
     print(concordance_df.to_string(index=False))
     return
 
 
 @app.cell
 def _(
-    OUTPUT_SAT,
+    OUTPUT_SHARE,
     SITE_NAME,
     cohort,
     cohort_with_delivery,
@@ -955,7 +959,7 @@ def _(
             _row[f"pct_{_flag}"] = round(_n / _eligible_n * 100, 2) if _eligible_n > 0 else 0.0
         hospital_summary = pl.DataFrame([_row])
 
-    hospital_summary.write_csv(OUTPUT_SAT / f"sat_stats_{SITE_NAME}.csv")
+    hospital_summary.write_csv(OUTPUT_SHARE / f"sat_stats_{SITE_NAME}.csv")
     print(hospital_summary.to_pandas().T)
     return
 
