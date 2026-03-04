@@ -30,9 +30,9 @@ def _():
     DATA_DIR = _cfg["data_directory"]
     TIMEZONE = _cfg.get("timezone", None)
     OUTPUT_PHI = Path(__file__).parent.parent / "output_phi"
-    OUTPUT_SBT = OUTPUT_PHI / "sbt_standard"        # row-level PHI data
+    OUTPUT_SBT = OUTPUT_PHI / "sbt_both_stabilities"        # row-level PHI data
     OUTPUT_SBT.mkdir(parents=True, exist_ok=True)
-    OUTPUT_SHARE = Path(__file__).parent.parent / "output_to_share" / "sbt_standard"
+    OUTPUT_SHARE = Path(__file__).parent.parent / "output_to_share" / "sbt_both_stabilities"
     OUTPUT_SHARE.mkdir(parents=True, exist_ok=True)
 
     print(f"Site: {SITE_NAME}")
@@ -78,6 +78,27 @@ def _(pl, wide):
 
 @app.cell
 def _(df, pl):
+    df = df.with_columns(
+        pl.col("nee").fill_null(0.0).alias("nee_filled"),
+    ).with_columns(
+        (pl.col("nee_filled") <= 0.2).cast(pl.Int32).alias("hemodynamic_stable"),
+    ).drop("nee_filled")
+    df = df.with_columns(
+        (
+            (pl.col("fio2_set").fill_null(0.21) <= 0.5)
+            & (pl.col("peep_set").fill_null(0.0) <= 8)
+            & (pl.col("spo2").fill_null(100.0) >= 88)
+        ).cast(pl.Int32).alias("respiratory_stable"),
+    )
+    print(f"Hemodynamic stability: {df.filter(pl.col('hemodynamic_stable') == 1).height:,} / {df.height:,} rows stable")
+    print(f"Respiratory stability: {df.filter(pl.col('respiratory_stable') == 1).height:,} / {df.height:,} rows stable")
+    _both = df.filter((pl.col('hemodynamic_stable') == 1) & (pl.col('respiratory_stable') == 1)).height
+    print(f"Both stable: {_both:,} / {df.height:,} rows")
+    return (df,)
+
+
+@app.cell
+def _(df, pl):
     # All unique patient-days (needed so days with zero overnight rows still appear)
     _all_keys = df.select("hosp_id_day_key").unique()
 
@@ -88,12 +109,14 @@ def _(df, pl):
     )
 
     # Per day: check each condition within the overnight window only
-    # SBT eligibility: IMV + no paralytics (no sedation requirement)
+    # SBT eligibility: IMV + no paralytics + hemodynamic + respiratory stability (no sedation requirement)
     _overnight_flags = (
         _overnight.group_by("hosp_id_day_key")
         .agg(
             (pl.col("max_paralytics") > 0).any().alias("has_paralytics"),
             (pl.col("device_category").str.to_lowercase() == "imv").any().alias("has_imv"),
+            (pl.col("hemodynamic_stable") == 1).any().alias("has_hemo_stable"),
+            (pl.col("respiratory_stable") == 1).any().alias("has_resp_stable"),
         )
     )
 
@@ -108,12 +131,15 @@ def _(df, pl):
     _day_flags = _day_flags.with_columns(
         pl.col("has_paralytics").fill_null(False),
         pl.col("has_imv").fill_null(False),
+        pl.col("has_hemo_stable").fill_null(False),
+        pl.col("has_resp_stable").fill_null(False),
     )
 
     # Hierarchical failure reason: no overnight data 1st, then no IMV, then paralytics, then <6h
     _day_flags = _day_flags.with_columns(
         pl.when(~pl.col("has_overnight_data")).then(pl.lit("No overnight data"))
         .when(~pl.col("has_imv")).then(pl.lit("No IMV"))
+        .when(~pl.col("has_hemo_stable") | ~pl.col("has_resp_stable")).then(pl.lit("Hemodynamic/respiratory instability"))
         .when(pl.col("has_paralytics")).then(pl.lit("Paralytics present"))
         .otherwise(pl.lit("< 6h continuous window"))
         .alias("eligibility_failure_reason")
@@ -125,9 +151,10 @@ def _(df, pl):
     _total = _day_flags.height
     _n_overnight = _day_flags.filter(pl.col("has_overnight_data")).height
     _n_imv = _day_flags.filter(pl.col("has_overnight_data") & pl.col("has_imv")).height
+    _n_both_stable = _day_flags.filter(pl.col("has_overnight_data") & pl.col("has_imv") & pl.col("has_hemo_stable") & pl.col("has_resp_stable")).height
 
     consort_partial = {
-        "total": _total, "n_overnight": _n_overnight, "n_imv": _n_imv,
+        "total": _total, "n_overnight": _n_overnight, "n_imv": _n_imv, "n_both_stable": _n_both_stable,
     }
     return consort_partial, failure_reason_df
 
@@ -135,14 +162,16 @@ def _(df, pl):
 @app.cell
 def _(np, pl, tqdm):
     def process_cohort(df: pl.DataFrame) -> pl.DataFrame:
-        """Find patient-days with >= 6h continuous SBT eligibility in the 22:00-06:00 window."""
+        """Find patient-days with >= 6h continuous SBT eligibility (hemodynamic + respiratory stability) in the 22:00-06:00 window."""
         df = df.sort("hospitalization_id", "recorded_dttm")
 
-        # Mark each row: IMV + no paralytics (no sedation requirement for SBT)
+        # Mark each row: IMV + no paralytics + hemodynamic + respiratory stability
         df = df.with_columns(
             (
                 (pl.col("device_category").str.to_lowercase() == "imv")
                 & (pl.col("max_paralytics") <= 0)
+                & (pl.col("hemodynamic_stable") == 1)
+                & (pl.col("respiratory_stable") == 1)
             ).cast(pl.Int32).alias("all_conditions_check")
         )
 
@@ -164,7 +193,7 @@ def _(np, pl, tqdm):
         result_time = []
 
         # Loop over each patient
-        for (hosp_id,), hosp_df in tqdm(df.group_by("hospitalization_id"), desc="SBT eligibility check"):
+        for (hosp_id,), hosp_df in tqdm(df.group_by("hospitalization_id"), desc="SBT eligibility check (hemo+resp)"):
             hosp_df = hosp_df.sort("recorded_dttm")
             times = hosp_df["recorded_dttm"].to_numpy().astype("datetime64[us]")
             conditions = hosp_df["all_conditions_check"].to_numpy()
@@ -580,7 +609,8 @@ def _(
     plot_consort,
 ):
     _n_elig = n_eligible_days
-    _n_not_elig = max(0, consort_partial["n_imv"] - _n_elig)
+    _n_not_stable = consort_partial["n_imv"] - consort_partial["n_both_stable"]
+    _n_not_elig = max(0, consort_partial["n_both_stable"] - _n_elig)
 
     consort_sbt = [
         {"step": 0, "description": "Total patient days in index ICU",
@@ -593,7 +623,10 @@ def _(
          "remaining": consort_partial["n_imv"],
          "excluded": consort_partial["n_overnight"] - consort_partial["n_imv"],
          "reason": "No IMV"},
-        {"step": 3, "description": "Eligible days (≥6h IMV, no paralytics)",
+        {"step": 3, "description": "Days with hemodynamic + respiratory stability",
+         "remaining": consort_partial["n_both_stable"],
+         "excluded": _n_not_stable, "reason": "Hemodynamic/respiratory instability"},
+        {"step": 4, "description": "Eligible days (≥6h IMV, no paralytics, both stable)",
          "remaining": _n_elig,
          "excluded": _n_not_elig, "reason": "Not eligible"},
     ]

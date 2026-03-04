@@ -67,41 +67,11 @@ def _(OUTPUT_PHI, pl):
 
 @app.cell
 def _(pl, wide):
-    VENT_DAY_ANCHOR_HOUR = 0   # calendar day (midnight-to-midnight)
-
-    # Ensure datetime columns are Datetime type
     df = wide.with_columns(
         pl.col("recorded_dttm").cast(pl.Datetime("us")),
         pl.col("first_icu_start").cast(pl.Datetime("us")),
         pl.col("first_icu_end").cast(pl.Datetime("us")),
-    )
-
-    # Truncate to date → calendar day grouping
-    df = df.with_columns(
-        (pl.col("recorded_dttm") - pl.duration(hours=VENT_DAY_ANCHOR_HOUR))
-        .dt.truncate("1d")
-        .alias("vent_day_date")
-    )
-
-    # Number the vent-days 1, 2, 3… per patient using dense rank
-    df = df.with_columns(
-        pl.col("vent_day_date")
-        .rank("dense")
-        .over("hospitalization_id")
-        .cast(pl.Int64)
-        .alias("vent_day_num")
-    )
-
-    # Build the grouping key: "20001361_day_1", "20001361_day_2", etc.
-    df = df.with_columns(
-        pl.concat_str([
-            pl.col("hospitalization_id").cast(pl.Utf8),
-            pl.lit("_day_"),
-            pl.col("vent_day_num").cast(pl.Utf8),
-        ]).alias("hosp_id_day_key")
-    )
-
-    df = df.sort("hospitalization_id", "recorded_dttm")
+    ).sort("hospitalization_id", "recorded_dttm")
     print(f"Preprocessed: {df.height:,} rows, {df['hosp_id_day_key'].n_unique():,} hosp-day keys")
     return (df,)
 
@@ -605,7 +575,19 @@ def _(cohort, cohort_elig, pl, sat_flag_cols, sat_time_cols, vent_eligible):
 
 
 @app.cell
-def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
+def _(
+    DATA_DIR,
+    OUTPUT_SHARE,
+    Path,
+    SITE_NAME,
+    TIMEZONE,
+    cohort,
+    df,
+    df_grouped,
+    json,
+    pd,
+    pl,
+):
     from clifpy.utils.comorbidity import calculate_cci
     from clifpy.utils.sofa_polars import compute_sofa_polars
 
@@ -628,21 +610,35 @@ def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
         calculate_cci(_dx, hierarchy=True)
     ).select("hospitalization_id", "cci_score")
 
-    # ── Step 3: SOFA — worst over ICU stay ──
-    _sofa_input = cohort.select(
-        "hospitalization_id",
-        pl.col("first_icu_start").alias("start_dttm"),
-        pl.col("first_icu_end").alias("end_dttm"),
+    # ── Step 3: SOFA — worst per vent-day, then shift to prior day ──
+    _day_cohort = (
+        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_date")
+        .unique(subset=["hosp_id_day_key"])
+        .with_columns(
+            pl.col("vent_day_date").alias("start_dttm"),
+            (pl.col("vent_day_date") + pl.duration(days=1)).alias("end_dttm"),
+        )
     )
-    _sofa = compute_sofa_polars(
+    _daily_sofa = compute_sofa_polars(
         data_directory=DATA_DIR,
-        cohort_df=_sofa_input,
+        cohort_df=_day_cohort,
         filetype="parquet",
+        id_name="hosp_id_day_key",
         extremal_type="worst",
         fill_na_scores_with_zero=True,
         remove_outliers=True,
         timezone=TIMEZONE,
-    ).select("hospitalization_id", "sofa_total")
+    ).select("hosp_id_day_key", "sofa_total")
+
+    # Map daily SOFA back to hospitalization + vent_day_num, then shift to prior day
+    _sofa_with_day = _daily_sofa.join(
+        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_num")
+        .unique(subset=["hosp_id_day_key"]),
+        on="hosp_id_day_key", how="left",
+    )
+    _sofa_prior = _sofa_with_day.with_columns(
+        (pl.col("vent_day_num") + 1).alias("_next")
+    ).select("hospitalization_id", "_next", pl.col("sofa_total").alias("sofa_prior"))
 
     # ── Step 4: Prior-day aggregates from wide dataset ──
     _day_agg = df.group_by(
@@ -664,11 +660,12 @@ def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
         pl.col("nee").mean().alias("nee_prior"),
         pl.col("fio2_set").mean().alias("fio2_prior"),
         pl.col("peep_set").mean().alias("peep_prior"),
+        pl.col("gcs_total").min().alias("gcs_prior"),
     )
     # Shift: day N gets day N−1's aggregates
     _prior_cols = [
         "bzd_prior", "propofol_prior", "opioid_prior", "nmb_prior",
-        "rass_prior", "nee_prior", "fio2_prior", "peep_prior",
+        "rass_prior", "nee_prior", "fio2_prior", "peep_prior", "gcs_prior",
     ]
     _prior = _day_agg.with_columns(
         (pl.col("vent_day_num") + 1).alias("_next")
@@ -683,11 +680,19 @@ def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
     # ── Step 5: Join demographics, CCI, SOFA ──
     _demo = cohort.select(
         "hospitalization_id", "age_at_admission", "sex_category",
-        "race_category", "ethnicity_category", "language_category", "bmi",
+        "race_category", "ethnicity_category", "language_category",
+        "weight_kg", "height_cm", "bmi",
+        "hospital_los_hours", "first_icu_los_hours", "imv_duration_hours",
+        "discharge_category",
     )
     _tbl = _tbl.join(_demo, on="hospitalization_id", how="left")
     _tbl = _tbl.join(_cci, on="hospitalization_id", how="left")
-    _tbl = _tbl.join(_sofa, on="hospitalization_id", how="left")
+    _tbl = _tbl.join(
+        _sofa_prior,
+        left_on=["hospitalization_id", "vent_day_num"],
+        right_on=["hospitalization_id", "_next"],
+        how="left",
+    )
 
     # ── Step 6: Formatting helpers ──
     def _median_iqr(s):
@@ -717,6 +722,45 @@ def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
             for r in vc.iter_rows(named=True)
         ]
 
+    # ── Step 6b: Raw-value helpers for machine-parseable JSON ──
+    def _median_iqr_raw(s):
+        n_missing = int(s.is_null().sum())
+        s = s.drop_nulls().cast(pl.Float64)
+        if len(s) == 0:
+            return {"median": None, "q25": None, "q75": None, "n_missing": n_missing}
+        return {
+            "median": round(float(s.median()), 1),
+            "q25": round(float(s.quantile(0.25)), 1),
+            "q75": round(float(s.quantile(0.75)), 1),
+            "n_missing": n_missing,
+        }
+
+    def _mean_sd_raw(s):
+        n_missing = int(s.is_null().sum())
+        s = s.drop_nulls().cast(pl.Float64)
+        if len(s) == 0:
+            return {"mean": None, "sd": None, "n_missing": n_missing}
+        return {
+            "mean": round(float(s.mean()), 1),
+            "sd": round(float(s.std()), 1),
+            "n_missing": n_missing,
+        }
+
+    def _n_pct_raw(mask, n_total):
+        n = int(mask.drop_nulls().sum())
+        return {"n": n, "pct": round(n / n_total * 100, 1) if n_total else None, "N": n_total}
+
+    def _cat_rows_raw(s, n_total):
+        s = s.drop_nulls()
+        if len(s) == 0:
+            return {}
+        vc = s.value_counts().sort("count", descending=True)
+        col = [c for c in vc.columns if c != "count"][0]
+        return {
+            str(r[col]): {"n": int(r["count"]), "pct": round(r["count"] / n_total * 100, 1)}
+            for r in vc.iter_rows(named=True)
+        }
+
     def _table1_col(sub):
         n = sub.height
         rows = [("N (vent-days)", f"{n:,}")]
@@ -734,11 +778,20 @@ def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
                 n,
             ),
         ))
-        rows.append(("Preferred language", ""))
-        rows.extend(_cat_rows(sub["language_category"], n))
+        _lang = sub["language_category"].map_elements(
+            lambda x: "English" if x and x.lower() == "english" else "Non-English",
+            return_dtype=pl.Utf8,
+        )
+        rows.append(("Preferred language, English", _n_pct(_lang == "English", n)))
+        rows.append(("Weight, kg", _median_iqr(sub["weight_kg"])))
+        rows.append(("Weight missing, n", _n_pct(sub["weight_kg"].is_null(), n)))
+        rows.append(("Height, cm", _median_iqr(sub["height_cm"])))
+        rows.append(("Height missing, n", _n_pct(sub["height_cm"].is_null(), n)))
         rows.append(("BMI, kg/m²", _median_iqr(sub["bmi"])))
+        rows.append(("BMI missing, n", _n_pct(sub["bmi"].is_null(), n)))
         rows.append(("CCI", _median_iqr(sub["cci_score"])))
-        rows.append(("SOFA (worst, ICU stay)", _median_iqr(sub["sofa_total"])))
+        rows.append(("SOFA prior day", _median_iqr(sub["sofa_prior"])))
+        rows.append(("GCS prior day", _median_iqr(sub["gcs_prior"])))
         rows.append(("BZD exposure prior day", _n_pct(sub["bzd_prior"], n)))
         rows.append(("Propofol exposure prior day", _n_pct(sub["propofol_prior"], n)))
         rows.append(("Opioid infusion prior day", _n_pct(sub["opioid_prior"], n)))
@@ -747,7 +800,55 @@ def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
         rows.append(("NEE prior day", _mean_sd(sub["nee_prior"])))
         rows.append(("FiO2 prior day", _mean_sd(sub["fio2_prior"])))
         rows.append(("PEEP prior day", _mean_sd(sub["peep_prior"])))
+        rows.append(("Hospital LOS, hours", _median_iqr(sub["hospital_los_hours"])))
+        rows.append(("ICU LOS, hours", _median_iqr(sub["first_icu_los_hours"])))
+        rows.append(("IMV duration, hours", _median_iqr(sub["imv_duration_hours"])))
+        rows.append(("In-hospital mortality", _n_pct(
+            sub["discharge_category"].str.to_lowercase() == "expired", n
+        )))
         return rows
+
+    def _table1_col_raw(sub):
+        n = sub.height
+        d = {}
+        d["N (vent-days)"] = {"n": n}
+        d["Age, years"] = _median_iqr_raw(sub["age_at_admission"])
+        d["Sex, female"] = _n_pct_raw(
+            sub["sex_category"].str.to_lowercase() == "female", n
+        )
+        d["Race"] = _cat_rows_raw(sub["race_category"], n)
+        d["Ethnicity, Hispanic/Latino"] = _n_pct_raw(
+            sub["ethnicity_category"].str.to_lowercase().str.contains("hispanic", literal=True), n
+        )
+        _lang = sub["language_category"].map_elements(
+            lambda x: "English" if x and x.lower() == "english" else "Non-English",
+            return_dtype=pl.Utf8,
+        )
+        d["Preferred language, English"] = _n_pct_raw(_lang == "English", n)
+        d["Weight, kg"] = _median_iqr_raw(sub["weight_kg"])
+        d["Weight missing, n"] = _n_pct_raw(sub["weight_kg"].is_null(), n)
+        d["Height, cm"] = _median_iqr_raw(sub["height_cm"])
+        d["Height missing, n"] = _n_pct_raw(sub["height_cm"].is_null(), n)
+        d["BMI, kg/m²"] = _median_iqr_raw(sub["bmi"])
+        d["BMI missing, n"] = _n_pct_raw(sub["bmi"].is_null(), n)
+        d["CCI"] = _median_iqr_raw(sub["cci_score"])
+        d["SOFA prior day"] = _median_iqr_raw(sub["sofa_prior"])
+        d["GCS prior day"] = _median_iqr_raw(sub["gcs_prior"])
+        d["BZD exposure prior day"] = _n_pct_raw(sub["bzd_prior"], n)
+        d["Propofol exposure prior day"] = _n_pct_raw(sub["propofol_prior"], n)
+        d["Opioid infusion prior day"] = _n_pct_raw(sub["opioid_prior"], n)
+        d["NMB prior day"] = _n_pct_raw(sub["nmb_prior"], n)
+        d["RASS prior day"] = _median_iqr_raw(sub["rass_prior"])
+        d["NEE prior day"] = _mean_sd_raw(sub["nee_prior"])
+        d["FiO2 prior day"] = _mean_sd_raw(sub["fio2_prior"])
+        d["PEEP prior day"] = _mean_sd_raw(sub["peep_prior"])
+        d["Hospital LOS, hours"] = _median_iqr_raw(sub["hospital_los_hours"])
+        d["ICU LOS, hours"] = _median_iqr_raw(sub["first_icu_los_hours"])
+        d["IMV duration, hours"] = _median_iqr_raw(sub["imv_duration_hours"])
+        d["In-hospital mortality"] = _n_pct_raw(
+            sub["discharge_category"].str.to_lowercase() == "expired", n
+        )
+        return d
 
     # ── Step 7: Compute for 3 groups and save ──
     _ov = _table1_col(_tbl)
@@ -765,6 +866,26 @@ def _(DATA_DIR, OUTPUT_SHARE, Path, TIMEZONE, cohort, df, df_grouped, pd, pl):
     })
 
     table1.to_csv(OUTPUT_SHARE / "table1.csv", index=False)
+
+    # ── Step 8: Export JSON for cross-site aggregation ──
+    table1_dict = {
+        "site": SITE_NAME,
+        "groups": {
+            "Overall": _table1_col_raw(_tbl),
+            "SAT Eligible": _table1_col_raw(
+                _tbl.filter(pl.col("eligible_event") == 1)
+            ),
+            "SAT Ineligible": _table1_col_raw(
+                _tbl.filter(
+                    pl.col("eligible_event").is_null()
+                    | (pl.col("eligible_event") != 1)
+                )
+            ),
+        },
+    }
+    with open(OUTPUT_SHARE / "table1.json", "w") as f:
+        json.dump(table1_dict, f, indent=2)
+
     print(table1.to_string(index=False))
     return
 

@@ -326,6 +326,31 @@ def _(assess_wide, cohort, meds_wide, pl, resp_df, spo2_df):
         .alias("icu_day")
     )
 
+    # Vent-day columns (shared by SAT & SBT notebooks)
+    VENT_DAY_ANCHOR_HOUR = 0  # calendar day (midnight-to-midnight)
+
+    wide = wide.with_columns(
+        (pl.col("recorded_dttm") - pl.duration(hours=VENT_DAY_ANCHOR_HOUR))
+        .dt.truncate("1d")
+        .alias("vent_day_date")
+    )
+
+    wide = wide.with_columns(
+        pl.col("vent_day_date")
+        .rank("dense")
+        .over("hospitalization_id")
+        .cast(pl.Int64)
+        .alias("vent_day_num")
+    )
+
+    wide = wide.with_columns(
+        pl.concat_str([
+            pl.col("hospitalization_id").cast(pl.Utf8),
+            pl.lit("_day_"),
+            pl.col("vent_day_num").cast(pl.Utf8),
+        ]).alias("hosp_id_day_key")
+    )
+
     print(f"Wide dataset: {wide.height:,} rows x {wide.width} cols")
     print(f"\nNull counts (before forward-fill):")
     _nulls = wide.null_count()
@@ -337,6 +362,7 @@ def _(assess_wide, cohort, meds_wide, pl, resp_df, spo2_df):
     # Forward-fill within each patient (all columns except device_name, mode_name)
     _no_fill = {
         "hospitalization_id", "recorded_dttm", "device_name", "mode_name", "icu_day",
+        "vent_day_date", "vent_day_num", "hosp_id_day_key",
         # SAT/SBT flowsheet flags are point-in-time; forward-fill bleeds across days
         "sat_screen_pass_fail", "sat_screen_performed",
         "sat_delivery_pass_fail", "sat_delivery_performed",
