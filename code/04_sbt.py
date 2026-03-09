@@ -19,7 +19,7 @@ def _():
     import json
     from pathlib import Path
     from tqdm import tqdm
-    from helper import plot_consort
+    from helper import plot_consort, plot_upset
 
     # Read site-specific config (site name, paths, etc.)
     _config_path = Path(__file__).parent.parent / "clif_config.json"
@@ -51,6 +51,7 @@ def _():
         pd,
         pl,
         plot_consort,
+        plot_upset,
         tqdm,
     )
 
@@ -121,6 +122,15 @@ def _(df, pl):
 
     failure_reason_df = _day_flags.select("hosp_id_day_key", "eligibility_failure_reason")
 
+    # Independent boolean failure flags (one row per IMV day, multiple True possible)
+    failure_flags_df = (
+        _day_flags.filter(pl.col("has_overnight_data") & pl.col("has_imv"))
+        .select(
+            "hosp_id_day_key",
+            pl.col("has_paralytics"),
+        )
+    )
+
     # CONSORT step counts: total → overnight → IMV (remaining go to eligibility check)
     _total = _day_flags.height
     _n_overnight = _day_flags.filter(pl.col("has_overnight_data")).height
@@ -129,7 +139,7 @@ def _(df, pl):
     consort_partial = {
         "total": _total, "n_overnight": _n_overnight, "n_imv": _n_imv,
     }
-    return consort_partial, failure_reason_df
+    return consort_partial, failure_flags_df, failure_reason_df
 
 
 @app.cell
@@ -432,7 +442,7 @@ def _(cohort_elig, np, pl, tqdm):
 
 
 @app.cell
-def _(cohort, cohort_elig, pl, sbt_flag_cols, vent_eligible):
+def _(cohort, cohort_elig, failure_flags_df, pl, sbt_flag_cols, vent_eligible):
     cohort_with_delivery = vent_eligible
 
     # Aggregate: for each hosp_id_day_key, take the MAX of each flag column
@@ -502,6 +512,12 @@ def _(cohort, cohort_elig, pl, sbt_flag_cols, vent_eligible):
         .then(True)
         .otherwise(False)
         .alias("is_eligible")
+    )
+
+    # Join independent failure flags + mark no_6h_window
+    df_grouped = df_grouped.join(failure_flags_df, on="hosp_id_day_key", how="left")
+    df_grouped = df_grouped.with_columns(
+        (~pl.col("is_eligible")).alias("no_6h_window"),
     )
 
     # Build the ground truth: a day counts as "delivered" if ANY of the 4 EHR
@@ -578,6 +594,7 @@ def _(
     n_eligible_days,
     pl,
     plot_consort,
+    plot_upset,
 ):
     _n_elig = n_eligible_days
     _n_not_elig = max(0, consort_partial["n_imv"] - _n_elig)
@@ -607,6 +624,28 @@ def _(
     _n_30min = df_grouped.filter(pl.col("SBT_delivery_30min") == 1).height
     print(f"SBT CONSORT saved. Eligible days: {_n_elig:,}")
     print(f"  2min delivery: {_n_2min:,}  |  30min delivery: {_n_30min:,}")
+
+    # Eligibility failure CSV + UpSet plot
+    _fail_cols = ["has_paralytics", "no_6h_window"]
+    _fail_df = df_grouped.filter(~pl.col("is_eligible")).select(["hosp_id_day_key"] + _fail_cols)
+    _fail_df.write_csv(OUTPUT_SBT / f"eligibility_failures_{SITE_NAME}.csv")
+    plot_upset(_fail_df.to_pandas(), _fail_cols, OUTPUT_SHARE / f"upset_eligibility_{SITE_NAME}.png")
+    print(f"Eligibility failure CSV + UpSet plot saved ({_fail_df.height:,} non-eligible days)")
+
+    # Detection failure UpSet (eligible days where SBT not detected)
+    _det_df = (
+        df_grouped.filter(pl.col("is_eligible"))
+        .filter(pl.col("SBT_delivery_30min").is_null())
+        .with_columns(
+            (pl.col("SBT_delivery_2min_failure") == "No mode FLIP to PS/CPAP/T-piece").fill_null(False).alias("no_flip"),
+            (pl.col("SBT_delivery_2min_failure") == "FLIP not sustained for 2min").fill_null(False).alias("flip_not_sustained_2min"),
+            (pl.col("SBT_delivery_2min").is_not_null() & pl.col("SBT_delivery_30min").is_null()).alias("flip_sustained_2min_not_30min"),
+        )
+    )
+    _det_cols = ["no_flip", "flip_not_sustained_2min", "flip_sustained_2min_not_30min"]
+    _det_df.select(["hosp_id_day_key"] + _det_cols).write_csv(OUTPUT_SBT / f"detection_failures_{SITE_NAME}.csv")
+    plot_upset(_det_df.select(_det_cols).to_pandas(), _det_cols, OUTPUT_SHARE / f"upset_detection_{SITE_NAME}.png")
+    print(f"Detection failure UpSet saved ({_det_df.height:,} eligible days with failed detection)")
     return
 
 

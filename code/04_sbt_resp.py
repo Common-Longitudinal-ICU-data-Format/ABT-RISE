@@ -19,7 +19,7 @@ def _():
     import json
     from pathlib import Path
     from tqdm import tqdm
-    from helper import plot_consort
+    from helper import plot_consort, plot_upset
 
     # Read site-specific config (site name, paths, etc.)
     _config_path = Path(__file__).parent.parent / "clif_config.json"
@@ -51,6 +51,7 @@ def _():
         pd,
         pl,
         plot_consort,
+        plot_upset,
         tqdm,
     )
 
@@ -73,11 +74,6 @@ def _(pl, wide):
         pl.col("first_icu_end").cast(pl.Datetime("us")),
     ).sort("hospitalization_id", "recorded_dttm")
     print(f"Preprocessed: {df.height:,} rows, {df['hosp_id_day_key'].n_unique():,} hosp-day keys")
-    return (df,)
-
-
-@app.cell
-def _(df, pl):
     df = df.with_columns(
         (
             (pl.col("fio2_set").fill_null(0.21) <= 0.5)
@@ -101,7 +97,7 @@ def _(df, pl):
     )
 
     # Per day: check each condition within the overnight window only
-    # SBT eligibility: IMV + no paralytics + respiratory stability (no sedation requirement)
+    # SBT eligibility: IMV + no paralytics (no sedation requirement)
     _overnight_flags = (
         _overnight.group_by("hosp_id_day_key")
         .agg(
@@ -129,7 +125,6 @@ def _(df, pl):
     _day_flags = _day_flags.with_columns(
         pl.when(~pl.col("has_overnight_data")).then(pl.lit("No overnight data"))
         .when(~pl.col("has_imv")).then(pl.lit("No IMV"))
-        .when(~pl.col("has_resp_stable")).then(pl.lit("Respiratory instability"))
         .when(pl.col("has_paralytics")).then(pl.lit("Paralytics present"))
         .otherwise(pl.lit("< 6h continuous window"))
         .alias("eligibility_failure_reason")
@@ -137,16 +132,25 @@ def _(df, pl):
 
     failure_reason_df = _day_flags.select("hosp_id_day_key", "eligibility_failure_reason")
 
+    # Independent boolean failure flags (one row per IMV day, multiple True possible)
+    failure_flags_df = (
+        _day_flags.filter(pl.col("has_overnight_data") & pl.col("has_imv"))
+        .select(
+            "hosp_id_day_key",
+            pl.col("has_paralytics"),
+            (~pl.col("has_resp_stable")).alias("resp_unstable"),
+        )
+    )
+
     # CONSORT step counts: total → overnight → IMV (remaining go to eligibility check)
     _total = _day_flags.height
     _n_overnight = _day_flags.filter(pl.col("has_overnight_data")).height
     _n_imv = _day_flags.filter(pl.col("has_overnight_data") & pl.col("has_imv")).height
-    _n_resp_stable = _day_flags.filter(pl.col("has_overnight_data") & pl.col("has_imv") & pl.col("has_resp_stable")).height
 
     consort_partial = {
-        "total": _total, "n_overnight": _n_overnight, "n_imv": _n_imv, "n_resp_stable": _n_resp_stable,
+        "total": _total, "n_overnight": _n_overnight, "n_imv": _n_imv,
     }
-    return consort_partial, failure_reason_df
+    return consort_partial, failure_flags_df, failure_reason_df
 
 
 @app.cell
@@ -450,7 +454,7 @@ def _(cohort_elig, np, pl, tqdm):
 
 
 @app.cell
-def _(cohort, cohort_elig, pl, sbt_flag_cols, vent_eligible):
+def _(cohort, cohort_elig, failure_flags_df, pl, sbt_flag_cols, vent_eligible):
     cohort_with_delivery = vent_eligible
 
     # Aggregate: for each hosp_id_day_key, take the MAX of each flag column
@@ -520,6 +524,12 @@ def _(cohort, cohort_elig, pl, sbt_flag_cols, vent_eligible):
         .then(True)
         .otherwise(False)
         .alias("is_eligible")
+    )
+
+    # Join independent failure flags + mark no_6h_window
+    df_grouped = df_grouped.join(failure_flags_df, on="hosp_id_day_key", how="left")
+    df_grouped = df_grouped.with_columns(
+        (~pl.col("is_eligible")).alias("no_6h_window"),
     )
 
     # Build the ground truth: a day counts as "delivered" if ANY of the 4 EHR
@@ -596,10 +606,10 @@ def _(
     n_eligible_days,
     pl,
     plot_consort,
+    plot_upset,
 ):
     _n_elig = n_eligible_days
-    _n_not_resp = consort_partial["n_imv"] - consort_partial["n_resp_stable"]
-    _n_not_elig = max(0, consort_partial["n_resp_stable"] - _n_elig)
+    _n_not_elig = max(0, consort_partial["n_imv"] - _n_elig)
 
     consort_sbt = [
         {"step": 0, "description": "Total patient days in index ICU",
@@ -612,10 +622,7 @@ def _(
          "remaining": consort_partial["n_imv"],
          "excluded": consort_partial["n_overnight"] - consort_partial["n_imv"],
          "reason": "No IMV"},
-        {"step": 3, "description": "Days with respiratory stability (FiO2 ≤ 0.5, PEEP ≤ 8, SpO2 ≥ 88)",
-         "remaining": consort_partial["n_resp_stable"],
-         "excluded": _n_not_resp, "reason": "Respiratory instability"},
-        {"step": 4, "description": "Eligible days (≥6h IMV, no paralytics, resp stable)",
+        {"step": 3, "description": "Eligible days (≥6h IMV, no paralytics, resp stable)",
          "remaining": _n_elig,
          "excluded": _n_not_elig, "reason": "Not eligible"},
     ]
@@ -629,6 +636,28 @@ def _(
     _n_30min = df_grouped.filter(pl.col("SBT_delivery_30min") == 1).height
     print(f"SBT CONSORT saved. Eligible days: {_n_elig:,}")
     print(f"  2min delivery: {_n_2min:,}  |  30min delivery: {_n_30min:,}")
+
+    # Eligibility failure CSV + UpSet plot
+    _fail_cols = ["has_paralytics", "resp_unstable", "no_6h_window"]
+    _fail_df = df_grouped.filter(~pl.col("is_eligible")).select(["hosp_id_day_key"] + _fail_cols)
+    _fail_df.write_csv(OUTPUT_SBT / f"eligibility_failures_{SITE_NAME}.csv")
+    plot_upset(_fail_df.to_pandas(), _fail_cols, OUTPUT_SHARE / f"upset_eligibility_{SITE_NAME}.png")
+    print(f"Eligibility failure CSV + UpSet plot saved ({_fail_df.height:,} non-eligible days)")
+
+    # Detection failure UpSet (eligible days where SBT not detected)
+    _det_df = (
+        df_grouped.filter(pl.col("is_eligible"))
+        .filter(pl.col("SBT_delivery_30min").is_null())
+        .with_columns(
+            (pl.col("SBT_delivery_2min_failure") == "No mode FLIP to PS/CPAP/T-piece").fill_null(False).alias("no_flip"),
+            (pl.col("SBT_delivery_2min_failure") == "FLIP not sustained for 2min").fill_null(False).alias("flip_not_sustained_2min"),
+            (pl.col("SBT_delivery_2min").is_not_null() & pl.col("SBT_delivery_30min").is_null()).alias("flip_sustained_2min_not_30min"),
+        )
+    )
+    _det_cols = ["no_flip", "flip_not_sustained_2min", "flip_sustained_2min_not_30min"]
+    _det_df.select(["hosp_id_day_key"] + _det_cols).write_csv(OUTPUT_SBT / f"detection_failures_{SITE_NAME}.csv")
+    plot_upset(_det_df.select(_det_cols).to_pandas(), _det_cols, OUTPUT_SHARE / f"upset_detection_{SITE_NAME}.png")
+    print(f"Detection failure UpSet saved ({_det_df.height:,} eligible days with failed detection)")
     return
 
 
