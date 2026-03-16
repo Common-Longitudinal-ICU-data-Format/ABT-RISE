@@ -255,16 +255,26 @@ def _(hosp_24h, icu_24h, pl, rs_all_df, rs_df, timedelta):
     print(f"Excluded (tracheostomy): {n_excluded_trach:,}")
     print(f"Remaining: {len(_hosp_no_trach):,}")
 
-    # --- Exclusion: Trach Collar device in ICU windows ---
+    # --- Exclusion: Trach Collar device in first 24h of hospital admission ---
     _collar_ids = (
-        rs_df.filter(pl.col("device_category").str.to_lowercase() == "trach collar")
+        rs_all_df
+        .join(
+            hosp_24h.select(["hospitalization_id", "admission_dttm"]),
+            on="hospitalization_id",
+            how="inner",
+        )
+        .filter(
+            (pl.col("recorded_dttm") >= pl.col("admission_dttm"))
+            & (pl.col("recorded_dttm") <= pl.col("admission_dttm") + timedelta(hours=24))
+        )
+        .filter(pl.col("device_category").str.to_lowercase() == "trach collar")
         .select("hospitalization_id")
         .unique()
     )
     _hosp_no_collar = _hosp_no_trach.join(_collar_ids, on="hospitalization_id", how="anti")
     _icu_no_collar = _icu_no_trach.join(_collar_ids, on="hospitalization_id", how="anti")
     n_excluded_collar = len(_hosp_no_trach) - len(_hosp_no_collar)
-    print(f"Excluded (trach collar): {n_excluded_collar:,}")
+    print(f"Excluded (trach collar in first 24h): {n_excluded_collar:,}")
     print(f"Remaining: {len(_hosp_no_collar):,}")
 
     # --- Find first ICU stay with IMV (from remaining) ---
@@ -724,10 +734,10 @@ def _(
         },
         {
             "step": 7,
-            "description": "No trach collar in ICU stays",
+            "description": "No trach collar in first 24h of admission",
             "remaining": len(hosp_24h) - n_excluded_trach - n_excluded_collar,
             "excluded": n_excluded_collar,
-            "reason": "Trach collar device during ICU stay",
+            "reason": "Trach collar device in first 24 hours of admission",
         },
         {
             "step": 8,

@@ -30,9 +30,9 @@ def _():
     DATA_DIR = _cfg["data_directory"]
     TIMEZONE = _cfg.get("timezone", None)
     OUTPUT_PHI = Path(__file__).parent.parent / "output_phi"
-    OUTPUT_SBT = OUTPUT_PHI / "sbt_both_stabilities"        # row-level PHI data
+    OUTPUT_SBT = OUTPUT_PHI / "sbt_standard"        # row-level PHI data
     OUTPUT_SBT.mkdir(parents=True, exist_ok=True)
-    OUTPUT_SHARE = Path(__file__).parent.parent / "output_to_share" / "sbt_both_stabilities"
+    OUTPUT_SHARE = Path(__file__).parent.parent / "output_to_share" / "sbt_standard"
     OUTPUT_SHARE.mkdir(parents=True, exist_ok=True)
 
     print(f"Site: {SITE_NAME}")
@@ -74,22 +74,6 @@ def _(pl, wide):
         pl.col("first_icu_end").cast(pl.Datetime("us")),
     ).sort("hospitalization_id", "recorded_dttm")
     print(f"Preprocessed: {df.height:,} rows, {df['hosp_id_day_key'].n_unique():,} hosp-day keys")
-    df = df.with_columns(
-        pl.col("nee").fill_null(0.0).alias("nee_filled"),
-    ).with_columns(
-        (pl.col("nee_filled") <= 0.2).cast(pl.Int32).alias("hemodynamic_stable"),
-    ).drop("nee_filled")
-    df = df.with_columns(
-        (
-            (pl.col("fio2_set").fill_null(0.21) <= 0.5)
-            & (pl.col("peep_set").fill_null(0.0) <= 8)
-            & (pl.col("spo2").fill_null(100.0) >= 88)
-        ).cast(pl.Int32).alias("respiratory_stable"),
-    )
-    print(f"Hemodynamic stability: {df.filter(pl.col('hemodynamic_stable') == 1).height:,} / {df.height:,} rows stable")
-    print(f"Respiratory stability: {df.filter(pl.col('respiratory_stable') == 1).height:,} / {df.height:,} rows stable")
-    _both = df.filter((pl.col('hemodynamic_stable') == 1) & (pl.col('respiratory_stable') == 1)).height
-    print(f"Both stable: {_both:,} / {df.height:,} rows")
     return (df,)
 
 
@@ -111,8 +95,6 @@ def _(df, pl):
         .agg(
             (pl.col("max_paralytics") > 0).any().alias("has_paralytics"),
             (pl.col("device_category").str.to_lowercase() == "imv").any().alias("has_imv"),
-            (pl.col("respiratory_stable") == 1).any().alias("has_resp_stable"),
-            (pl.col("hemodynamic_stable") == 1).any().alias("has_hemo_stable"),
         )
     )
 
@@ -127,8 +109,6 @@ def _(df, pl):
     _day_flags = _day_flags.with_columns(
         pl.col("has_paralytics").fill_null(False),
         pl.col("has_imv").fill_null(False),
-        pl.col("has_resp_stable").fill_null(False),
-        pl.col("has_hemo_stable").fill_null(False),
     )
 
     # Hierarchical failure reason: no overnight data 1st, then no IMV, then paralytics, then <6h
@@ -148,8 +128,6 @@ def _(df, pl):
         .select(
             "hosp_id_day_key",
             pl.col("has_paralytics"),
-            (~pl.col("has_resp_stable")).alias("resp_unstable"),
-            (~pl.col("has_hemo_stable")).alias("hemo_unstable"),
         )
     )
 
@@ -167,16 +145,14 @@ def _(df, pl):
 @app.cell
 def _(np, pl, tqdm):
     def process_cohort(df: pl.DataFrame) -> pl.DataFrame:
-        """Find patient-days with >= 6h continuous SBT eligibility (hemodynamic + respiratory stability) in the 22:00-06:00 window."""
+        """Find patient-days with >= 6h continuous SBT eligibility in the 22:00-06:00 window."""
         df = df.sort("hospitalization_id", "recorded_dttm")
 
-        # Mark each row: IMV + no paralytics + hemodynamic + respiratory stability
+        # Mark each row: IMV + no paralytics (no sedation requirement for SBT)
         df = df.with_columns(
             (
                 (pl.col("device_category").str.to_lowercase() == "imv")
                 & (pl.col("max_paralytics") <= 0)
-                & (pl.col("hemodynamic_stable") == 1)
-                & (pl.col("respiratory_stable") == 1)
             ).cast(pl.Int32).alias("all_conditions_check")
         )
 
@@ -198,7 +174,7 @@ def _(np, pl, tqdm):
         result_time = []
 
         # Loop over each patient
-        for (hosp_id,), hosp_df in tqdm(df.group_by("hospitalization_id"), desc="SBT eligibility check (hemo+resp)"):
+        for (hosp_id,), hosp_df in tqdm(df.group_by("hospitalization_id"), desc="SBT eligibility check"):
             hosp_df = hosp_df.sort("recorded_dttm")
             times = hosp_df["recorded_dttm"].to_numpy().astype("datetime64[us]")
             conditions = hosp_df["all_conditions_check"].to_numpy()
@@ -334,7 +310,7 @@ def _(cohort_elig, np, pl, tqdm):
     # ── SBT Delivery: Ventilator Mode FLIP Detection ──
     # A FLIP = ventilator mode switches from controlled to PS/CPAP/T-piece
     # with pressure_support_set <= 8 and peep_set <= 8
-    _FLAG_COLS = ["SBT_delivery_2min_primary", "SBT_delivery_5min_secondary"]
+    _FLAG_COLS = ["SBT_delivery_2min", "SBT_delivery_30min"]
 
     # Keep only rows from eligible days
     vent_eligible = (
@@ -380,7 +356,7 @@ def _(cohort_elig, np, pl, tqdm):
 
     # ── Main loop: evaluate FLIP at each candidate timepoint ──
     _delta_2min_us = int(2 * 60 * 1e6)    # 2 min in microseconds
-    _delta_5min_us = int(5 * 60 * 1e6)    # 5 min in microseconds
+    _delta_30min_us = int(30 * 60 * 1e6)  # 30 min in microseconds
     _flag_results = []
 
     for _key in tqdm(vent_eligible["hosp_id_day_key"].unique().sort().to_list(), desc="Evaluating SBT FLIP"):
@@ -398,11 +374,11 @@ def _(cohort_elig, np, pl, tqdm):
         _thresh_time = _thresh_vals[0]  # same for all rows in this day
 
         _found_2min = False
-        _found_5min = False
+        _found_30min = False
 
         # Iterate through candidate FLIP timepoints (must be after 6h threshold)
         for i in range(_n):
-            if _found_2min and _found_5min:
+            if _found_2min and _found_30min:
                 break
 
             if not _flips[i]:
@@ -420,26 +396,26 @@ def _(cohort_elig, np, pl, tqdm):
                 fw_flips = _flips[fw_2min_mask]
                 if len(fw_flips) > 0 and fw_flips.all():
                     _found_2min = True
-                    _row = {"_row_idx": int(_row_idxs[i]), "SBT_delivery_2min_primary": 1.0}
-                    # Check if this same point also satisfies 5min
-                    if not _found_5min:
-                        fw_5min_mask = (_times >= cur_time) & (_times <= cur_time + _delta_5min_us)
-                        fw_flips_5 = _flips[fw_5min_mask]
-                        if len(fw_flips_5) > 0 and fw_flips_5.all():
-                            _found_5min = True
-                            _row["SBT_delivery_5min_secondary"] = 1.0
+                    _row = {"_row_idx": int(_row_idxs[i]), "SBT_delivery_2min": 1.0}
+                    # Check if this same point also satisfies 30min
+                    if not _found_30min:
+                        fw_30min_mask = (_times >= cur_time) & (_times <= cur_time + _delta_30min_us)
+                        fw_flips_30 = _flips[fw_30min_mask]
+                        if len(fw_flips_30) > 0 and fw_flips_30.all():
+                            _found_30min = True
+                            _row["SBT_delivery_30min"] = 1.0
                     _flag_results.append(_row)
                     continue
 
-            # Check 5-min sustained FLIP (independent search)
-            if not _found_5min:
-                fw_5min_mask = (_times >= cur_time) & (_times <= cur_time + _delta_5min_us)
-                fw_flips_5 = _flips[fw_5min_mask]
-                if len(fw_flips_5) > 0 and fw_flips_5.all():
-                    _found_5min = True
+            # Check 30-min sustained FLIP (independent search)
+            if not _found_30min:
+                fw_30min_mask = (_times >= cur_time) & (_times <= cur_time + _delta_30min_us)
+                fw_flips_30 = _flips[fw_30min_mask]
+                if len(fw_flips_30) > 0 and fw_flips_30.all():
+                    _found_30min = True
                     _flag_results.append({
                         "_row_idx": int(_row_idxs[i]),
-                        "SBT_delivery_5min_secondary": 1.0,
+                        "SBT_delivery_30min": 1.0,
                     })
 
     # Build flag result DataFrame and join back
@@ -466,7 +442,7 @@ def _(cohort_elig, np, pl, tqdm):
 
 
 @app.cell
-def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, sbt_flag_cols, vent_eligible):
+def _(cohort, cohort_elig, failure_flags_df, pl, sbt_flag_cols, vent_eligible):
     cohort_with_delivery = vent_eligible
 
     # Aggregate: for each hosp_id_day_key, take the MAX of each flag column
@@ -545,14 +521,14 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
     )
 
     # Build the ground truth: a day counts as "delivered" if ANY of the 4 EHR
-    # flowsheet columns is charted (non-null), AND the day was eligible
+    # flowsheet columns is 1, AND the day was eligible
     df_grouped = df_grouped.with_columns(
         pl.when(
             (
-                pl.col("sbt_screen_pass_fail").is_not_null()
-                | pl.col("sbt_screen_performed").is_not_null()
-                | pl.col("sbt_delivery_pass_fail").is_not_null()
-                | pl.col("sbt_delivery_performed").is_not_null()
+                (pl.col("sbt_screen_pass_fail") == 1)
+                | (pl.col("sbt_screen_performed") == 1)
+                | (pl.col("sbt_delivery_pass_fail") == 1)
+                | (pl.col("sbt_delivery_performed") == 1)
             )
             & (pl.col("eligible_event") == 1)
         )
@@ -572,17 +548,17 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
     df_grouped = df_grouped.join(_flip_occurred, on="hosp_id_day_key", how="left")
     df_grouped = df_grouped.with_columns(
         # 2-min delivery failure
-        pl.when(pl.col("SBT_delivery_2min_primary") == 1).then(None)
+        pl.when(pl.col("SBT_delivery_2min") == 1).then(None)
         .when(pl.col("eligible_event").is_null()).then(None)
         .when(pl.col("_has_flip").not_()).then(pl.lit("No mode FLIP to PS/CPAP/T-piece"))
         .otherwise(pl.lit("FLIP not sustained for 2min"))
-        .alias("SBT_delivery_2min_primary_failure"),
-        # 5-min delivery failure
-        pl.when(pl.col("SBT_delivery_5min_secondary") == 1).then(None)
+        .alias("SBT_delivery_2min_failure"),
+        # 30-min delivery failure
+        pl.when(pl.col("SBT_delivery_30min") == 1).then(None)
         .when(pl.col("eligible_event").is_null()).then(None)
         .when(pl.col("_has_flip").not_()).then(pl.lit("No mode FLIP to PS/CPAP/T-piece"))
-        .otherwise(pl.lit("FLIP not sustained for 5min"))
-        .alias("SBT_delivery_5min_secondary_failure"),
+        .otherwise(pl.lit("FLIP not sustained for 30min"))
+        .alias("SBT_delivery_30min_failure"),
     ).drop("_has_flip")
 
     # ── Join eligibility failure reason (one per day) ──
@@ -592,147 +568,14 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
     )
     df_grouped = df_grouped.join(_elig_reason, on="hosp_id_day_key", how="left")
 
-    # ── Keep all days; add eligibility pass flag ──
-    df_grouped = df_grouped.with_columns(
-        pl.col("is_eligible").alias("eligibility_day_pass"),
+    # Remove days without overnight data or IMV — not analyzable for SBT
+    df_grouped = df_grouped.filter(
+        pl.col("eligibility_failure_reason").is_null()
+        | ~pl.col("eligibility_failure_reason").is_in(["No overnight data", "No IMV"])
     )
 
-    # Capture total vent day count (all days, including non-analyzable)
+    # Capture total vent day count AFTER filtering (analyzable IMV days only)
     n_vent_days = df_grouped.height
-
-    # ── Enrich with demographics, priors, and outcome ──
-    from clifpy.utils.comorbidity import calculate_cci
-    from clifpy.utils.sofa_polars import compute_sofa_polars
-
-    # Map hosp_id_day_key → hospitalization_id + vent_day_num + vent_day_date
-    _key_map = (
-        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_num", "vent_day_date")
-        .unique(subset=["hosp_id_day_key"])
-    )
-    df_grouped = df_grouped.join(_key_map, on="hosp_id_day_key", how="left")
-
-    # Charlson Comorbidity Index (ICD-10 only)
-    _dx = pl.read_parquet(Path(DATA_DIR) / "clif_hospital_diagnosis.parquet")
-    _dx = _dx.filter(
-        pl.col("diagnosis_code_format") == "ICD10CM",
-        pl.col("hospitalization_id").is_in(cohort["hospitalization_id"]),
-    )
-    _cci = pl.from_pandas(
-        calculate_cci(_dx, hierarchy=True)
-    ).select("hospitalization_id", "cci_score")
-
-    # SOFA — worst per vent-day, then shift to prior day
-    _day_cohort = (
-        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_date")
-        .unique(subset=["hosp_id_day_key"])
-        .with_columns(
-            pl.col("vent_day_date").alias("start_dttm"),
-            (pl.col("vent_day_date") + pl.duration(days=1)).alias("end_dttm"),
-        )
-    )
-    _daily_sofa = compute_sofa_polars(
-        data_directory=DATA_DIR,
-        cohort_df=_day_cohort,
-        filetype="parquet",
-        id_name="hosp_id_day_key",
-        extremal_type="worst",
-        fill_na_scores_with_zero=True,
-        remove_outliers=True,
-        timezone=TIMEZONE,
-    ).select("hosp_id_day_key", "sofa_total")
-
-    _sofa_with_day = _daily_sofa.join(
-        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_num")
-        .unique(subset=["hosp_id_day_key"]),
-        on="hosp_id_day_key", how="left",
-    )
-    _sofa_prior = _sofa_with_day.with_columns(
-        (pl.col("vent_day_num") + 1).alias("_next")
-    ).select("hospitalization_id", "_next", pl.col("sofa_total").alias("sofa_prior"))
-
-    # Prior-day aggregates from wide dataset
-    _day_agg = df.group_by(
-        "hosp_id_day_key", "hospitalization_id", "vent_day_num"
-    ).agg(
-        ((pl.col("lorazepam") > 0) | (pl.col("midazolam") > 0))
-        .any()
-        .alias("bzd_prior"),
-        (pl.col("propofol") > 0).any().alias("propofol_prior"),
-        (
-            (pl.col("fentanyl") > 0)
-            | (pl.col("hydromorphone") > 0)
-            | (pl.col("morphine") > 0)
-        )
-        .any()
-        .alias("opioid_prior"),
-        (pl.col("max_paralytics") > 0).any().alias("nmb_prior"),
-        pl.col("rass").median().alias("rass_prior"),
-        pl.col("nee").median().alias("nee_prior"),
-        pl.col("fio2_set").median().alias("fio2_prior"),
-        pl.col("peep_set").median().alias("peep_prior"),
-        pl.col("gcs_total").median().alias("gcs_prior"),
-    )
-    _prior_cols = [
-        "bzd_prior", "propofol_prior", "opioid_prior", "nmb_prior",
-        "rass_prior", "nee_prior", "fio2_prior", "peep_prior", "gcs_prior",
-    ]
-    _prior = _day_agg.with_columns(
-        (pl.col("vent_day_num") + 1).alias("_next")
-    ).select("hospitalization_id", "_next", *_prior_cols)
-    df_grouped = df_grouped.join(
-        _prior,
-        left_on=["hospitalization_id", "vent_day_num"],
-        right_on=["hospitalization_id", "_next"],
-        how="left",
-    )
-
-    # Demographics, CCI, SOFA
-    _demo = cohort.select(
-        "hospitalization_id", "age_at_admission", "sex_category",
-        "race_category", "ethnicity_category", "language_category",
-        "weight_kg", "height_cm", "bmi",
-        "hospital_los_hours", "first_icu_los_hours", "imv_duration_hours",
-        "discharge_category",
-    )
-    df_grouped = df_grouped.join(_demo, on="hospitalization_id", how="left")
-    df_grouped = df_grouped.join(_cci, on="hospitalization_id", how="left")
-    df_grouped = df_grouped.join(
-        _sofa_prior,
-        left_on=["hospitalization_id", "vent_day_num"],
-        right_on=["hospitalization_id", "_next"],
-        how="left",
-    )
-    df_grouped = df_grouped.with_columns(
-        (pl.col("sex_category").str.to_lowercase() == "female").alias("is_female"),
-        (pl.col("language_category").str.to_lowercase() == "english").alias("is_english"),
-    )
-
-    # Outcome: 3=death, 2=extubated, 0=alive (per day)
-    _patient = pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet").select("patient_id", "death_dttm")
-    _death_info = cohort.select(
-        "hospitalization_id", "patient_id", "extubation_time", "discharge_dttm",
-    ).join(_patient, on="patient_id", how="left")
-    df_grouped = df_grouped.join(
-        _death_info.select("hospitalization_id", "extubation_time", "discharge_dttm", "death_dttm"),
-        on="hospitalization_id", how="left",
-    )
-    df_grouped = df_grouped.with_columns(
-        pl.when(
-            pl.col("death_dttm").is_not_null()
-            & (pl.col("death_dttm").dt.truncate("1d") == pl.col("vent_day_date"))
-        ).then(3)
-        .when(
-            (pl.col("discharge_category").str.to_lowercase() == "expired")
-            & pl.col("death_dttm").is_null()
-            & (pl.col("discharge_dttm").dt.truncate("1d") == pl.col("vent_day_date"))
-        ).then(3)
-        .when(
-            pl.col("extubation_time").is_not_null()
-            & (pl.col("extubation_time").dt.truncate("1d") == pl.col("vent_day_date"))
-        ).then(2)
-        .otherwise(0)
-        .alias("outcome")
-    )
 
     print(f"Day-level aggregated: {df_grouped.height:,} hosp-days")
     for _col in sbt_flag_cols + ["sbt_ground_truth"]:
@@ -767,7 +610,7 @@ def _(
          "remaining": consort_partial["n_imv"],
          "excluded": consort_partial["n_overnight"] - consort_partial["n_imv"],
          "reason": "No IMV"},
-        {"step": 3, "description": "Eligible days (≥6h IMV, no paralytics, both stable)",
+        {"step": 3, "description": "Eligible days (≥6h IMV, no paralytics)",
          "remaining": _n_elig,
          "excluded": _n_not_elig, "reason": "Not eligible"},
     ]
@@ -777,17 +620,14 @@ def _(
     plot_consort(consort_sbt, OUTPUT_SHARE / f"consort_sbt_{SITE_NAME}.png")
 
     # Delivery sub-analysis print
-    _n_2min = df_grouped.filter(pl.col("SBT_delivery_2min_primary") == 1).height
-    _n_5min = df_grouped.filter(pl.col("SBT_delivery_5min_secondary") == 1).height
+    _n_2min = df_grouped.filter(pl.col("SBT_delivery_2min") == 1).height
+    _n_30min = df_grouped.filter(pl.col("SBT_delivery_30min") == 1).height
     print(f"SBT CONSORT saved. Eligible days: {_n_elig:,}")
-    print(f"  2min delivery: {_n_2min:,}  |  5min delivery: {_n_5min:,}")
+    print(f"  2min delivery: {_n_2min:,}  |  30min delivery: {_n_30min:,}")
 
     # Eligibility failure CSV + UpSet plot
-    _fail_cols = ["has_paralytics", "resp_unstable", "hemo_unstable", "no_6h_window"]
-    _fail_df = df_grouped.filter(
-        ~pl.col("is_eligible")
-        & ~pl.col("eligibility_failure_reason").is_in(["No overnight data", "No IMV"])
-    ).select(["hosp_id_day_key"] + _fail_cols)
+    _fail_cols = ["has_paralytics", "no_6h_window"]
+    _fail_df = df_grouped.filter(~pl.col("is_eligible")).select(["hosp_id_day_key"] + _fail_cols)
     _fail_df.write_csv(OUTPUT_SBT / f"eligibility_failures_{SITE_NAME}.csv")
     plot_upset(_fail_df.to_pandas(), _fail_cols, OUTPUT_SHARE / f"upset_eligibility_{SITE_NAME}.png")
     print(f"Eligibility failure CSV + UpSet plot saved ({_fail_df.height:,} non-eligible days)")
@@ -795,14 +635,14 @@ def _(
     # Detection failure UpSet (eligible days where SBT not detected)
     _det_df = (
         df_grouped.filter(pl.col("is_eligible"))
-        .filter(pl.col("SBT_delivery_5min_secondary").is_null())
+        .filter(pl.col("SBT_delivery_30min").is_null())
         .with_columns(
-            (pl.col("SBT_delivery_2min_primary_failure") == "No mode FLIP to PS/CPAP/T-piece").fill_null(False).alias("no_flip"),
-            (pl.col("SBT_delivery_2min_primary_failure") == "FLIP not sustained for 2min").fill_null(False).alias("flip_not_sustained_2min"),
-            (pl.col("SBT_delivery_2min_primary").is_not_null() & pl.col("SBT_delivery_5min_secondary").is_null()).alias("flip_sustained_2min_not_5min"),
+            (pl.col("SBT_delivery_2min_failure") == "No mode FLIP to PS/CPAP/T-piece").fill_null(False).alias("no_flip"),
+            (pl.col("SBT_delivery_2min_failure") == "FLIP not sustained for 2min").fill_null(False).alias("flip_not_sustained_2min"),
+            (pl.col("SBT_delivery_2min").is_not_null() & pl.col("SBT_delivery_30min").is_null()).alias("flip_sustained_2min_not_30min"),
         )
     )
-    _det_cols = ["no_flip", "flip_not_sustained_2min", "flip_sustained_2min_not_5min"]
+    _det_cols = ["no_flip", "flip_not_sustained_2min", "flip_sustained_2min_not_30min"]
     _det_df.select(["hosp_id_day_key"] + _det_cols).write_csv(OUTPUT_SBT / f"detection_failures_{SITE_NAME}.csv")
     plot_upset(_det_df.select(_det_cols).to_pandas(), _det_cols, OUTPUT_SHARE / f"upset_detection_{SITE_NAME}.png")
     print(f"Detection failure UpSet saved ({_det_df.height:,} eligible days with failed detection)")
@@ -902,16 +742,125 @@ def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sbt_flag_cols):
 
 @app.cell
 def _(
+    DATA_DIR,
     OUTPUT_SHARE,
+    Path,
     SITE_NAME,
+    TIMEZONE,
+    cohort,
+    df,
     df_grouped,
     json,
     pd,
     pl,
 ):
-    _tbl = df_grouped
+    from clifpy.utils.comorbidity import calculate_cci
+    from clifpy.utils.sofa_polars import compute_sofa_polars
 
-    # ── Formatting helpers ──
+    # ── Step 1: Map hosp_id_day_key → hospitalization_id + vent_day_num ──
+    _key_map = (
+        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_num")
+        .unique(subset=["hosp_id_day_key"])
+    )
+    _tbl = df_grouped.select("hosp_id_day_key", "eligible_event").join(
+        _key_map, on="hosp_id_day_key", how="left"
+    )
+
+    # ── Step 2: Charlson Comorbidity Index (ICD-10 only) ──
+    _dx = pl.read_parquet(Path(DATA_DIR) / "clif_hospital_diagnosis.parquet")
+    _dx = _dx.filter(
+        pl.col("diagnosis_code_format") == "ICD10CM",
+        pl.col("hospitalization_id").is_in(cohort["hospitalization_id"]),
+    )
+    _cci = pl.from_pandas(
+        calculate_cci(_dx, hierarchy=True)
+    ).select("hospitalization_id", "cci_score")
+
+    # ── Step 3: SOFA — worst per vent-day, then shift to prior day ──
+    _day_cohort = (
+        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_date")
+        .unique(subset=["hosp_id_day_key"])
+        .with_columns(
+            pl.col("vent_day_date").alias("start_dttm"),
+            (pl.col("vent_day_date") + pl.duration(days=1)).alias("end_dttm"),
+        )
+    )
+    _daily_sofa = compute_sofa_polars(
+        data_directory=DATA_DIR,
+        cohort_df=_day_cohort,
+        filetype="parquet",
+        id_name="hosp_id_day_key",
+        extremal_type="worst",
+        fill_na_scores_with_zero=True,
+        remove_outliers=True,
+        timezone=TIMEZONE,
+    ).select("hosp_id_day_key", "sofa_total")
+
+    # Map daily SOFA back to hospitalization + vent_day_num, then shift to prior day
+    _sofa_with_day = _daily_sofa.join(
+        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_num")
+        .unique(subset=["hosp_id_day_key"]),
+        on="hosp_id_day_key", how="left",
+    )
+    _sofa_prior = _sofa_with_day.with_columns(
+        (pl.col("vent_day_num") + 1).alias("_next")
+    ).select("hospitalization_id", "_next", pl.col("sofa_total").alias("sofa_prior"))
+
+    # ── Step 4: Prior-day aggregates from wide dataset ──
+    _day_agg = df.group_by(
+        "hosp_id_day_key", "hospitalization_id", "vent_day_num"
+    ).agg(
+        ((pl.col("lorazepam") > 0) | (pl.col("midazolam") > 0))
+        .any()
+        .alias("bzd_prior"),
+        (pl.col("propofol") > 0).any().alias("propofol_prior"),
+        (
+            (pl.col("fentanyl") > 0)
+            | (pl.col("hydromorphone") > 0)
+            | (pl.col("morphine") > 0)
+        )
+        .any()
+        .alias("opioid_prior"),
+        (pl.col("max_paralytics") > 0).any().alias("nmb_prior"),
+        pl.col("rass").median().alias("rass_prior"),
+        pl.col("nee").mean().alias("nee_prior"),
+        pl.col("fio2_set").mean().alias("fio2_prior"),
+        pl.col("peep_set").mean().alias("peep_prior"),
+        pl.col("gcs_total").min().alias("gcs_prior"),
+    )
+    # Shift: day N gets day N−1's aggregates
+    _prior_cols = [
+        "bzd_prior", "propofol_prior", "opioid_prior", "nmb_prior",
+        "rass_prior", "nee_prior", "fio2_prior", "peep_prior", "gcs_prior",
+    ]
+    _prior = _day_agg.with_columns(
+        (pl.col("vent_day_num") + 1).alias("_next")
+    ).select("hospitalization_id", "_next", *_prior_cols)
+    _tbl = _tbl.join(
+        _prior,
+        left_on=["hospitalization_id", "vent_day_num"],
+        right_on=["hospitalization_id", "_next"],
+        how="left",
+    )
+
+    # ── Step 5: Join demographics, CCI, SOFA ──
+    _demo = cohort.select(
+        "hospitalization_id", "age_at_admission", "sex_category",
+        "race_category", "ethnicity_category", "language_category",
+        "weight_kg", "height_cm", "bmi",
+        "hospital_los_hours", "first_icu_los_hours", "imv_duration_hours",
+        "discharge_category",
+    )
+    _tbl = _tbl.join(_demo, on="hospitalization_id", how="left")
+    _tbl = _tbl.join(_cci, on="hospitalization_id", how="left")
+    _tbl = _tbl.join(
+        _sofa_prior,
+        left_on=["hospitalization_id", "vent_day_num"],
+        right_on=["hospitalization_id", "_next"],
+        how="left",
+    )
+
+    # ── Step 6: Formatting helpers ──
     def _median_iqr(s):
         s = s.drop_nulls().cast(pl.Float64)
         if len(s) == 0:

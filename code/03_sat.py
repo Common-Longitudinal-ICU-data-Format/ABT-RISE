@@ -441,7 +441,7 @@ def _(cohort_elig, np, pl, tqdm):
 
 
 @app.cell
-def _(cohort, cohort_elig, failure_flags_df, pl, sat_flag_cols, sat_time_cols, vent_eligible):
+def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, sat_flag_cols, sat_time_cols, vent_eligible):
     cohort_with_delivery = vent_eligible
 
     # Aggregate: for each hosp_id_day_key, take the MAX of each flag column
@@ -524,14 +524,14 @@ def _(cohort, cohort_elig, failure_flags_df, pl, sat_flag_cols, sat_time_cols, v
     )
 
     # Build the ground truth: a day counts as "delivered" if ANY of the 4 EHR
-    # flowsheet columns is 1, AND the day was eligible
+    # flowsheet columns is charted (non-null), AND the day was eligible
     df_grouped = df_grouped.with_columns(
         pl.when(
             (
-                (pl.col("sat_screen_pass_fail") == 1)
-                | (pl.col("sat_screen_performed") == 1)
-                | (pl.col("sat_delivery_pass_fail") == 1)
-                | (pl.col("sat_delivery_performed") == 1)
+                pl.col("sat_screen_pass_fail").is_not_null()
+                | pl.col("sat_screen_performed").is_not_null()
+                | pl.col("sat_delivery_pass_fail").is_not_null()
+                | pl.col("sat_delivery_performed").is_not_null()
             )
             & (pl.col("eligible_event") == 1)
         )
@@ -572,50 +572,26 @@ def _(cohort, cohort_elig, failure_flags_df, pl, sat_flag_cols, sat_time_cols, v
     )
     df_grouped = df_grouped.join(_elig_reason, on="hosp_id_day_key", how="left")
 
-    # Remove days without overnight data or IMV — not analyzable for SAT
-    # (null = eligible day, must be kept; is_in on null returns null, so handle explicitly)
-    df_grouped = df_grouped.filter(
-        pl.col("eligibility_failure_reason").is_null()
-        | ~pl.col("eligibility_failure_reason").is_in(["No overnight data", "No IMV"])
+    # ── Keep all days; add eligibility pass flag ──
+    df_grouped = df_grouped.with_columns(
+        pl.col("is_eligible").alias("eligibility_day_pass"),
     )
 
-    # Capture total vent day count AFTER filtering (analyzable IMV days only)
+    # Capture total vent day count (all days, including non-analyzable)
     n_vent_days = df_grouped.height
 
-    print(f"Day-level aggregated: {df_grouped.height:,} hosp-days")
-    for _col in sat_flag_cols + ["sat_ground_truth"]:
-        _n = df_grouped.filter(pl.col(_col) == 1).height
-        print(f"  {_col}: {_n:,} days flagged")
-    return cohort_with_delivery, df_grouped, n_vent_days
-
-
-@app.cell
-def _(
-    DATA_DIR,
-    OUTPUT_SHARE,
-    Path,
-    SITE_NAME,
-    TIMEZONE,
-    cohort,
-    df,
-    df_grouped,
-    json,
-    pd,
-    pl,
-):
+    # ── Enrich with demographics, priors, and outcome ──
     from clifpy.utils.comorbidity import calculate_cci
     from clifpy.utils.sofa_polars import compute_sofa_polars
 
-    # ── Step 1: Map hosp_id_day_key → hospitalization_id + vent_day_num ──
+    # Map hosp_id_day_key → hospitalization_id + vent_day_num + vent_day_date
     _key_map = (
-        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_num")
+        df.select("hosp_id_day_key", "hospitalization_id", "vent_day_num", "vent_day_date")
         .unique(subset=["hosp_id_day_key"])
     )
-    _tbl = df_grouped.select("hosp_id_day_key", "eligible_event").join(
-        _key_map, on="hosp_id_day_key", how="left"
-    )
+    df_grouped = df_grouped.join(_key_map, on="hosp_id_day_key", how="left")
 
-    # ── Step 2: Charlson Comorbidity Index (ICD-10 only) ──
+    # Charlson Comorbidity Index (ICD-10 only)
     _dx = pl.read_parquet(Path(DATA_DIR) / "clif_hospital_diagnosis.parquet")
     _dx = _dx.filter(
         pl.col("diagnosis_code_format") == "ICD10CM",
@@ -625,7 +601,7 @@ def _(
         calculate_cci(_dx, hierarchy=True)
     ).select("hospitalization_id", "cci_score")
 
-    # ── Step 3: SOFA — worst per vent-day, then shift to prior day ──
+    # SOFA — worst per vent-day, then shift to prior day
     _day_cohort = (
         df.select("hosp_id_day_key", "hospitalization_id", "vent_day_date")
         .unique(subset=["hosp_id_day_key"])
@@ -645,7 +621,6 @@ def _(
         timezone=TIMEZONE,
     ).select("hosp_id_day_key", "sofa_total")
 
-    # Map daily SOFA back to hospitalization + vent_day_num, then shift to prior day
     _sofa_with_day = _daily_sofa.join(
         df.select("hosp_id_day_key", "hospitalization_id", "vent_day_num")
         .unique(subset=["hosp_id_day_key"]),
@@ -655,7 +630,7 @@ def _(
         (pl.col("vent_day_num") + 1).alias("_next")
     ).select("hospitalization_id", "_next", pl.col("sofa_total").alias("sofa_prior"))
 
-    # ── Step 4: Prior-day aggregates from wide dataset ──
+    # Prior-day aggregates from wide dataset
     _day_agg = df.group_by(
         "hosp_id_day_key", "hospitalization_id", "vent_day_num"
     ).agg(
@@ -672,12 +647,11 @@ def _(
         .alias("opioid_prior"),
         (pl.col("max_paralytics") > 0).any().alias("nmb_prior"),
         pl.col("rass").median().alias("rass_prior"),
-        pl.col("nee").mean().alias("nee_prior"),
-        pl.col("fio2_set").mean().alias("fio2_prior"),
-        pl.col("peep_set").mean().alias("peep_prior"),
-        pl.col("gcs_total").min().alias("gcs_prior"),
+        pl.col("nee").median().alias("nee_prior"),
+        pl.col("fio2_set").median().alias("fio2_prior"),
+        pl.col("peep_set").median().alias("peep_prior"),
+        pl.col("gcs_total").median().alias("gcs_prior"),
     )
-    # Shift: day N gets day N−1's aggregates
     _prior_cols = [
         "bzd_prior", "propofol_prior", "opioid_prior", "nmb_prior",
         "rass_prior", "nee_prior", "fio2_prior", "peep_prior", "gcs_prior",
@@ -685,14 +659,14 @@ def _(
     _prior = _day_agg.with_columns(
         (pl.col("vent_day_num") + 1).alias("_next")
     ).select("hospitalization_id", "_next", *_prior_cols)
-    _tbl = _tbl.join(
+    df_grouped = df_grouped.join(
         _prior,
         left_on=["hospitalization_id", "vent_day_num"],
         right_on=["hospitalization_id", "_next"],
         how="left",
     )
 
-    # ── Step 5: Join demographics, CCI, SOFA ──
+    # Demographics, CCI, SOFA
     _demo = cohort.select(
         "hospitalization_id", "age_at_admission", "sex_category",
         "race_category", "ethnicity_category", "language_category",
@@ -700,16 +674,65 @@ def _(
         "hospital_los_hours", "first_icu_los_hours", "imv_duration_hours",
         "discharge_category",
     )
-    _tbl = _tbl.join(_demo, on="hospitalization_id", how="left")
-    _tbl = _tbl.join(_cci, on="hospitalization_id", how="left")
-    _tbl = _tbl.join(
+    df_grouped = df_grouped.join(_demo, on="hospitalization_id", how="left")
+    df_grouped = df_grouped.join(_cci, on="hospitalization_id", how="left")
+    df_grouped = df_grouped.join(
         _sofa_prior,
         left_on=["hospitalization_id", "vent_day_num"],
         right_on=["hospitalization_id", "_next"],
         how="left",
     )
+    df_grouped = df_grouped.with_columns(
+        (pl.col("sex_category").str.to_lowercase() == "female").alias("is_female"),
+        (pl.col("language_category").str.to_lowercase() == "english").alias("is_english"),
+    )
 
-    # ── Step 6: Formatting helpers ──
+    # Outcome: 3=death, 2=extubated, 0=alive (per day)
+    _patient = pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet").select("patient_id", "death_dttm")
+    _death_info = cohort.select(
+        "hospitalization_id", "patient_id", "extubation_time", "discharge_dttm",
+    ).join(_patient, on="patient_id", how="left")
+    df_grouped = df_grouped.join(
+        _death_info.select("hospitalization_id", "extubation_time", "discharge_dttm", "death_dttm"),
+        on="hospitalization_id", how="left",
+    )
+    df_grouped = df_grouped.with_columns(
+        pl.when(
+            pl.col("death_dttm").is_not_null()
+            & (pl.col("death_dttm").dt.truncate("1d") == pl.col("vent_day_date"))
+        ).then(3)
+        .when(
+            (pl.col("discharge_category").str.to_lowercase() == "expired")
+            & pl.col("death_dttm").is_null()
+            & (pl.col("discharge_dttm").dt.truncate("1d") == pl.col("vent_day_date"))
+        ).then(3)
+        .when(
+            pl.col("extubation_time").is_not_null()
+            & (pl.col("extubation_time").dt.truncate("1d") == pl.col("vent_day_date"))
+        ).then(2)
+        .otherwise(0)
+        .alias("outcome")
+    )
+
+    print(f"Day-level aggregated: {df_grouped.height:,} hosp-days")
+    for _col in sat_flag_cols + ["sat_ground_truth"]:
+        _n = df_grouped.filter(pl.col(_col) == 1).height
+        print(f"  {_col}: {_n:,} days flagged")
+    return cohort_with_delivery, df_grouped, n_vent_days
+
+
+@app.cell
+def _(
+    OUTPUT_SHARE,
+    SITE_NAME,
+    df_grouped,
+    json,
+    pd,
+    pl,
+):
+    _tbl = df_grouped
+
+    # ── Formatting helpers ──
     def _median_iqr(s):
         s = s.drop_nulls().cast(pl.Float64)
         if len(s) == 0:
@@ -946,7 +969,10 @@ def _(
     _n_mod = df_grouped.filter(pl.col("SAT_modified_delivery") == 1).height
     # Eligibility failure CSV + UpSet plot
     _fail_cols = ["has_paralytics", "no_sedation", "no_4h_window"]
-    _fail_df = df_grouped.filter(~pl.col("is_eligible")).select(["hosp_id_day_key"] + _fail_cols)
+    _fail_df = df_grouped.filter(
+        ~pl.col("is_eligible")
+        & ~pl.col("eligibility_failure_reason").is_in(["No overnight data", "No IMV"])
+    ).select(["hosp_id_day_key"] + _fail_cols)
     _fail_df.write_csv(OUTPUT_SAT / f"eligibility_failures_{SITE_NAME}.csv")
     plot_upset(_fail_df.to_pandas(), _fail_cols, OUTPUT_SHARE / f"upset_eligibility_{SITE_NAME}.png")
 
