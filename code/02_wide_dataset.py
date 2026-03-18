@@ -152,6 +152,7 @@ def _(ALL_MEDS, OUTPUT_PHI, cohort, pl):
 
     # Rename admin_dttm → recorded_dttm (no truncation)
     _meds = _meds.rename({"admin_dttm": "recorded_dttm"})
+    _meds = _meds.with_columns(pl.col("recorded_dttm").cast(pl.Datetime("us")))
 
     # Aggregate: mean dose per (hosp, recorded_dttm, med_category)
     _meds_agg = (

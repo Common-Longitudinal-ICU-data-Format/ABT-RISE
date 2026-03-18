@@ -309,7 +309,7 @@ def _(df, failure_reason_df, pl, process_cohort):
         .unique()
     )
     cohort_elig = cohort_elig.with_columns(
-        pl.col("hosp_id_day_key").is_in(_eligible_keys["hosp_id_day_key"])
+        pl.col("hosp_id_day_key").is_in(_eligible_keys["hosp_id_day_key"].to_list())
         .cast(pl.Int32)
         .alias("on_vent_eligible")
     )
@@ -615,7 +615,7 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
     _dx = pl.read_parquet(Path(DATA_DIR) / "clif_hospital_diagnosis.parquet")
     _dx = _dx.filter(
         pl.col("diagnosis_code_format") == "ICD10CM",
-        pl.col("hospitalization_id").is_in(cohort["hospitalization_id"]),
+        pl.col("hospitalization_id").is_in(cohort["hospitalization_id"].to_list()),
     )
     _cci = pl.from_pandas(
         calculate_cci(_dx, hierarchy=True)
@@ -708,7 +708,7 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
     )
 
     # Outcome: 3=death, 2=extubated, 0=alive (per day)
-    _patient = pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet").select("patient_id", "death_dttm")
+    _patient = pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet").select("patient_id", "death_dttm").with_columns(pl.col("death_dttm").dt.replace_time_zone(None))
     _death_info = cohort.select(
         "hospitalization_id", "patient_id", "extubation_time", "discharge_dttm",
     ).join(_patient, on="patient_id", how="left")
@@ -748,13 +748,13 @@ def _(
     consort_partial,
     df_grouped,
     json,
-    n_eligible_days,
     pl,
     plot_consort,
     plot_upset,
 ):
-    _n_elig = n_eligible_days
-    _n_not_elig = max(0, consort_partial["n_imv"] - _n_elig)
+    _n_vent_days = df_grouped.height
+    _n_elig = df_grouped.filter(pl.col("eligible_event") == 1).height
+    _n_not_elig = _n_vent_days - _n_elig
 
     consort_sbt = [
         {"step": 0, "description": "Total patient days in index ICU",
@@ -763,9 +763,9 @@ def _(
          "remaining": consort_partial["n_overnight"],
          "excluded": consort_partial["total"] - consort_partial["n_overnight"],
          "reason": "No overnight data"},
-        {"step": 2, "description": "Days with IMV (22:00–06:00)",
-         "remaining": consort_partial["n_imv"],
-         "excluded": consort_partial["n_overnight"] - consort_partial["n_imv"],
+        {"step": 2, "description": "Vent-days with IMV",
+         "remaining": _n_vent_days,
+         "excluded": consort_partial["n_overnight"] - _n_vent_days,
          "reason": "No IMV"},
         {"step": 3, "description": "Eligible days (≥6h IMV, no paralytics, both stable)",
          "remaining": _n_elig,
@@ -817,19 +817,41 @@ def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sbt_flag_cols):
     rcParams["font.family"] = "Arial"
     rcParams["font.size"] = 8
 
-    def _kappa_ci_bootstrap(y_true, y_pred, n_boot=2000, ci=0.95, seed=42):
-        """Compute 95% confidence interval for Cohen's Kappa via bootstrap resampling."""
+    def _bootstrap_metrics_ci(y_true, y_pred, n_boot=2000, ci=0.95, seed=42):
+        """Bootstrap 95% CIs for all concordance metrics."""
         rng = np.random.default_rng(seed)
         n = len(y_true)
-        kappas = []
+        results = {k: [] for k in [
+            "Accuracy", "Sensitivity", "Specificity", "PPV", "NPV", "F1", "Cohen_Kappa"
+        ]}
         for _ in range(n_boot):
             idx = rng.choice(n, size=n, replace=True)
+            yt, yp = y_true.iloc[idx], y_pred.iloc[idx]
+            cm = confusion_matrix(yt, yp, labels=[0, 1])
+            tn, fp, fn, tp = cm.ravel()
+            tot = cm.sum()
+            results["Accuracy"].append((tp + tn) / tot)
+            results["Sensitivity"].append(tp / (tp + fn) if tp + fn else np.nan)
+            results["Specificity"].append(tn / (tn + fp) if tn + fp else np.nan)
+            results["PPV"].append(tp / (tp + fp) if tp + fp else np.nan)
+            results["NPV"].append(tn / (tn + fn) if tn + fn else np.nan)
+            p = tp / (tp + fp) if tp + fp else 0
+            r = tp / (tp + fn) if tp + fn else 0
+            results["F1"].append(2 * p * r / (p + r) if p + r else np.nan)
             try:
-                kappas.append(cohen_kappa_score(y_true.iloc[idx], y_pred.iloc[idx]))
+                results["Cohen_Kappa"].append(cohen_kappa_score(yt, yp))
             except Exception:
-                continue
+                results["Cohen_Kappa"].append(np.nan)
         alpha = (1 - ci) / 2
-        return float(np.percentile(kappas, alpha * 100)), float(np.percentile(kappas, (1 - alpha) * 100))
+        ci_dict = {}
+        for k, vals in results.items():
+            arr = np.array([v for v in vals if not np.isnan(v)])
+            if len(arr):
+                ci_dict[k] = (float(np.percentile(arr, alpha * 100)),
+                              float(np.percentile(arr, (1 - alpha) * 100)))
+            else:
+                ci_dict[k] = (np.nan, np.nan)
+        return ci_dict
 
     def _landis_koch(kappa):
         """Classify kappa value using the Landis-Koch agreement scale."""
@@ -847,7 +869,7 @@ def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sbt_flag_cols):
         .to_pandas()
     )
 
-    _metrics_list = []
+    _metrics_wide = {}
 
     # Compare each algorithmic flag against the flowsheet ground truth
     for _col in sbt_flag_cols:
@@ -855,7 +877,7 @@ def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sbt_flag_cols):
         _y_pred = _con_df[_col]                 # algorithmic prediction
 
         # Compute confusion matrix and standard metrics
-        _cm = confusion_matrix(_y_true, _y_pred)
+        _cm = confusion_matrix(_y_true, _y_pred, labels=[0, 1])
         _tn, _fp, _fn, _tp = _cm.ravel()
         _total = _cm.sum()
         _accuracy = (_tp + _tn) / _total
@@ -863,8 +885,19 @@ def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sbt_flag_cols):
         _recall = _tp / (_tp + _fn) if _tp + _fn else 0
         _f1 = 2 * _precision * _recall / (_precision + _recall) if _precision + _recall else 0
         _specificity = _tn / (_tn + _fp) if _tn + _fp else 0
+        _npv = _tn / (_tn + _fn) if _tn + _fn else 0
         _kappa = cohen_kappa_score(_y_true, _y_pred)
-        _kappa_lo, _kappa_hi = _kappa_ci_bootstrap(_y_true, _y_pred)
+
+        # Bootstrap 95% CIs for all metrics
+        _ci = _bootstrap_metrics_ci(_y_true, _y_pred)
+
+        # Save labelled confusion matrix CSV
+        _cm_df = pd.DataFrame(
+            _cm,
+            index=["Actual Negative", "Actual Positive"],
+            columns=["Predicted Negative", "Predicted Positive"],
+        )
+        _cm_df.to_csv(OUTPUT_SHARE / f"confusion_matrix_{_col}.csv")
 
         # Save a JAMA-style confusion matrix heatmap
         _cm_pct = _cm / _total * 100
@@ -885,18 +918,27 @@ def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sbt_flag_cols):
         _fig.savefig(OUTPUT_SHARE / f"confusion_matrix_{_col}.png", bbox_inches="tight", dpi=300)
         plt.close(_fig)
 
-        _metrics_list.append({
-            "Column": _col, "TP": _tp, "FP": _fp, "FN": _fn, "TN": _tn,
-            "Accuracy": _accuracy, "Precision": _precision, "Recall": _recall,
-            "F1": _f1, "Specificity": _specificity,
-            "Cohen_Kappa": _kappa, "Kappa_CI_lower": _kappa_lo, "Kappa_CI_upper": _kappa_hi,
+        # Build row-wide metrics column for this flag
+        _metrics_wide[_col] = {
+            "TP": _tp,
+            "FP": _fp,
+            "FN": _fn,
+            "TN": _tn,
+            "Accuracy": f"{_accuracy:.4f} ({_ci['Accuracy'][0]:.4f}\u2013{_ci['Accuracy'][1]:.4f})",
+            "Sensitivity (Recall)": f"{_recall:.4f} ({_ci['Sensitivity'][0]:.4f}\u2013{_ci['Sensitivity'][1]:.4f})",
+            "Specificity": f"{_specificity:.4f} ({_ci['Specificity'][0]:.4f}\u2013{_ci['Specificity'][1]:.4f})",
+            "PPV (Precision)": f"{_precision:.4f} ({_ci['PPV'][0]:.4f}\u2013{_ci['PPV'][1]:.4f})",
+            "NPV": f"{_npv:.4f} ({_ci['NPV'][0]:.4f}\u2013{_ci['NPV'][1]:.4f})",
+            "F1": f"{_f1:.4f} ({_ci['F1'][0]:.4f}\u2013{_ci['F1'][1]:.4f})",
+            "Cohen_Kappa": f"{_kappa:.4f} ({_ci['Cohen_Kappa'][0]:.4f}\u2013{_ci['Cohen_Kappa'][1]:.4f})",
             "Kappa_Interpretation": _landis_koch(_kappa),
-        })
+        }
 
-    # Save all metrics to CSV
-    concordance_df = pd.DataFrame(_metrics_list)
-    concordance_df.to_csv(OUTPUT_SHARE / "delivery_concordance_summary.csv", index=False)
-    print(concordance_df.to_string(index=False))
+    # Save row-wide summary (metrics as rows, flags as columns)
+    concordance_df = pd.DataFrame(_metrics_wide)
+    concordance_df.index.name = "Metric"
+    concordance_df.to_csv(OUTPUT_SHARE / "delivery_concordance_summary.csv")
+    print(concordance_df.to_string())
     return
 
 
