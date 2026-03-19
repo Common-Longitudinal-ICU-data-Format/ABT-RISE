@@ -1022,33 +1022,36 @@ def _(
 
     def _table1_col(sub):
         n = sub.height
+        sub_pt = sub.unique(subset=["hospitalization_id"])
+        n_pt = sub_pt.height
         rows = [("N (vent-days)", f"{n:,}")]
-        rows.append(("Age, years", _median_iqr(sub["age_at_admission"])))
+        rows.append(("N (patients)", f"{n_pt:,}"))
+        rows.append(("Age, years", _median_iqr(sub_pt["age_at_admission"])))
         rows.append((
             "Sex, female",
-            _n_pct(sub["sex_category"].str.to_lowercase() == "female", n),
+            _n_pct(sub_pt["sex_category"].str.to_lowercase() == "female", n_pt),
         ))
         rows.append(("Race", ""))
-        rows.extend(_cat_rows(sub["race_category"], n))
+        rows.extend(_cat_rows(sub_pt["race_category"], n_pt))
         rows.append((
             "Ethnicity, Hispanic/Latino",
             _n_pct(
-                sub["ethnicity_category"].str.to_lowercase().str.contains("hispanic", literal=True),
-                n,
+                sub_pt["ethnicity_category"].str.to_lowercase().str.contains("hispanic", literal=True),
+                n_pt,
             ),
         ))
-        _lang = sub["language_category"].map_elements(
+        _lang = sub_pt["language_category"].map_elements(
             lambda x: "English" if x and x.lower() == "english" else "Non-English",
             return_dtype=pl.Utf8,
         )
-        rows.append(("Preferred language, English", _n_pct(_lang == "English", n)))
-        rows.append(("Weight, kg", _median_iqr(sub["weight_kg"])))
-        rows.append(("Weight missing, n", _n_pct(sub["weight_kg"].is_null(), n)))
-        rows.append(("Height, cm", _median_iqr(sub["height_cm"])))
-        rows.append(("Height missing, n", _n_pct(sub["height_cm"].is_null(), n)))
-        rows.append(("BMI, kg/m²", _median_iqr(sub["bmi"])))
-        rows.append(("BMI missing, n", _n_pct(sub["bmi"].is_null(), n)))
-        rows.append(("CCI", _median_iqr(sub["cci_score"])))
+        rows.append(("Preferred language, English", _n_pct(_lang == "English", n_pt)))
+        rows.append(("Weight, kg", _median_iqr(sub_pt["weight_kg"])))
+        rows.append(("Weight missing, n", _n_pct(sub_pt["weight_kg"].is_null(), n_pt)))
+        rows.append(("Height, cm", _median_iqr(sub_pt["height_cm"])))
+        rows.append(("Height missing, n", _n_pct(sub_pt["height_cm"].is_null(), n_pt)))
+        rows.append(("BMI, kg/m²", _median_iqr(sub_pt["bmi"])))
+        rows.append(("BMI missing, n", _n_pct(sub_pt["bmi"].is_null(), n_pt)))
+        rows.append(("CCI", _median_iqr(sub_pt["cci_score"])))
         rows.append(("SOFA prior day", _median_iqr(sub["sofa_prior"])))
         rows.append(("GCS prior day", _median_iqr(sub["gcs_prior"])))
         rows.append(("BZD exposure prior day", _n_pct(sub["bzd_prior"], n)))
@@ -1059,38 +1062,41 @@ def _(
         rows.append(("NEE prior day", _mean_sd(sub["nee_prior"])))
         rows.append(("FiO2 prior day", _mean_sd(sub["fio2_prior"])))
         rows.append(("PEEP prior day", _mean_sd(sub["peep_prior"])))
-        rows.append(("Hospital LOS, hours", _median_iqr(sub["hospital_los_hours"])))
-        rows.append(("ICU LOS, hours", _median_iqr(sub["first_icu_los_hours"])))
-        rows.append(("IMV duration, hours", _median_iqr(sub["imv_duration_hours"])))
+        rows.append(("Hospital LOS, hours", _median_iqr(sub_pt["hospital_los_hours"])))
+        rows.append(("ICU LOS, hours", _median_iqr(sub_pt["first_icu_los_hours"])))
+        rows.append(("IMV duration, hours", _median_iqr(sub_pt["imv_duration_hours"])))
         rows.append(("In-hospital mortality", _n_pct(
-            sub["discharge_category"].str.to_lowercase() == "expired", n
+            sub_pt["discharge_category"].str.to_lowercase() == "expired", n_pt
         )))
         return rows
 
     def _table1_col_raw(sub):
         n = sub.height
+        sub_pt = sub.unique(subset=["hospitalization_id"])
+        n_pt = sub_pt.height
         d = {}
         d["N (vent-days)"] = {"n": n}
-        d["Age, years"] = _median_iqr_raw(sub["age_at_admission"])
+        d["N (patients)"] = {"n": n_pt}
+        d["Age, years"] = _median_iqr_raw(sub_pt["age_at_admission"])
         d["Sex, female"] = _n_pct_raw(
-            sub["sex_category"].str.to_lowercase() == "female", n
+            sub_pt["sex_category"].str.to_lowercase() == "female", n_pt
         )
-        d["Race"] = _cat_rows_raw(sub["race_category"], n)
+        d["Race"] = _cat_rows_raw(sub_pt["race_category"], n_pt)
         d["Ethnicity, Hispanic/Latino"] = _n_pct_raw(
-            sub["ethnicity_category"].str.to_lowercase().str.contains("hispanic", literal=True), n
+            sub_pt["ethnicity_category"].str.to_lowercase().str.contains("hispanic", literal=True), n_pt
         )
-        _lang = sub["language_category"].map_elements(
+        _lang = sub_pt["language_category"].map_elements(
             lambda x: "English" if x and x.lower() == "english" else "Non-English",
             return_dtype=pl.Utf8,
         )
-        d["Preferred language, English"] = _n_pct_raw(_lang == "English", n)
-        d["Weight, kg"] = _median_iqr_raw(sub["weight_kg"])
-        d["Weight missing, n"] = _n_pct_raw(sub["weight_kg"].is_null(), n)
-        d["Height, cm"] = _median_iqr_raw(sub["height_cm"])
-        d["Height missing, n"] = _n_pct_raw(sub["height_cm"].is_null(), n)
-        d["BMI, kg/m²"] = _median_iqr_raw(sub["bmi"])
-        d["BMI missing, n"] = _n_pct_raw(sub["bmi"].is_null(), n)
-        d["CCI"] = _median_iqr_raw(sub["cci_score"])
+        d["Preferred language, English"] = _n_pct_raw(_lang == "English", n_pt)
+        d["Weight, kg"] = _median_iqr_raw(sub_pt["weight_kg"])
+        d["Weight missing, n"] = _n_pct_raw(sub_pt["weight_kg"].is_null(), n_pt)
+        d["Height, cm"] = _median_iqr_raw(sub_pt["height_cm"])
+        d["Height missing, n"] = _n_pct_raw(sub_pt["height_cm"].is_null(), n_pt)
+        d["BMI, kg/m²"] = _median_iqr_raw(sub_pt["bmi"])
+        d["BMI missing, n"] = _n_pct_raw(sub_pt["bmi"].is_null(), n_pt)
+        d["CCI"] = _median_iqr_raw(sub_pt["cci_score"])
         d["SOFA prior day"] = _median_iqr_raw(sub["sofa_prior"])
         d["GCS prior day"] = _median_iqr_raw(sub["gcs_prior"])
         d["BZD exposure prior day"] = _n_pct_raw(sub["bzd_prior"], n)
@@ -1101,11 +1107,11 @@ def _(
         d["NEE prior day"] = _mean_sd_raw(sub["nee_prior"])
         d["FiO2 prior day"] = _mean_sd_raw(sub["fio2_prior"])
         d["PEEP prior day"] = _mean_sd_raw(sub["peep_prior"])
-        d["Hospital LOS, hours"] = _median_iqr_raw(sub["hospital_los_hours"])
-        d["ICU LOS, hours"] = _median_iqr_raw(sub["first_icu_los_hours"])
-        d["IMV duration, hours"] = _median_iqr_raw(sub["imv_duration_hours"])
+        d["Hospital LOS, hours"] = _median_iqr_raw(sub_pt["hospital_los_hours"])
+        d["ICU LOS, hours"] = _median_iqr_raw(sub_pt["first_icu_los_hours"])
+        d["IMV duration, hours"] = _median_iqr_raw(sub_pt["imv_duration_hours"])
         d["In-hospital mortality"] = _n_pct_raw(
-            sub["discharge_category"].str.to_lowercase() == "expired", n
+            sub_pt["discharge_category"].str.to_lowercase() == "expired", n_pt
         )
         return d
 
