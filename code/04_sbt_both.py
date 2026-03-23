@@ -1036,7 +1036,7 @@ def _(
         rows.append((
             "Ethnicity, Hispanic/Latino",
             _n_pct(
-                sub_pt["ethnicity_category"].str.to_lowercase().str.contains("hispanic", literal=True),
+                sub_pt["ethnicity_category"].str.to_lowercase().str.starts_with("hispanic"),
                 n_pt,
             ),
         ))
@@ -1062,8 +1062,8 @@ def _(
         rows.append(("NEE prior day", _mean_sd(sub["nee_prior"])))
         rows.append(("FiO2 prior day", _mean_sd(sub["fio2_prior"])))
         rows.append(("PEEP prior day", _mean_sd(sub["peep_prior"])))
-        rows.append(("Hospital LOS, hours", _median_iqr(sub_pt["hospital_los_hours"])))
-        rows.append(("ICU LOS, hours", _median_iqr(sub_pt["first_icu_los_hours"])))
+        rows.append(("Hospital LOS, days", _median_iqr(sub_pt["hospital_los_hours"] / 24)))
+        rows.append(("ICU LOS, days", _median_iqr(sub_pt["first_icu_los_hours"] / 24)))
         rows.append(("IMV duration, hours", _median_iqr(sub_pt["imv_duration_hours"])))
         rows.append(("In-hospital mortality", _n_pct(
             sub_pt["discharge_category"].str.to_lowercase() == "expired", n_pt
@@ -1083,7 +1083,7 @@ def _(
         )
         d["Race"] = _cat_rows_raw(sub_pt["race_category"], n_pt)
         d["Ethnicity, Hispanic/Latino"] = _n_pct_raw(
-            sub_pt["ethnicity_category"].str.to_lowercase().str.contains("hispanic", literal=True), n_pt
+            sub_pt["ethnicity_category"].str.to_lowercase().str.starts_with("hispanic"), n_pt
         )
         _lang = sub_pt["language_category"].map_elements(
             lambda x: "English" if x and x.lower() == "english" else "Non-English",
@@ -1107,8 +1107,8 @@ def _(
         d["NEE prior day"] = _mean_sd_raw(sub["nee_prior"])
         d["FiO2 prior day"] = _mean_sd_raw(sub["fio2_prior"])
         d["PEEP prior day"] = _mean_sd_raw(sub["peep_prior"])
-        d["Hospital LOS, hours"] = _median_iqr_raw(sub_pt["hospital_los_hours"])
-        d["ICU LOS, hours"] = _median_iqr_raw(sub_pt["first_icu_los_hours"])
+        d["Hospital LOS, days"] = _median_iqr_raw(sub_pt["hospital_los_hours"] / 24)
+        d["ICU LOS, days"] = _median_iqr_raw(sub_pt["first_icu_los_hours"] / 24)
         d["IMV duration, hours"] = _median_iqr_raw(sub_pt["imv_duration_hours"])
         d["In-hospital mortality"] = _n_pct_raw(
             sub_pt["discharge_category"].str.to_lowercase() == "expired", n_pt
