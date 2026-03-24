@@ -327,30 +327,58 @@ def _(assess_wide, cohort, meds_wide, pl, resp_df, spo2_df):
         .alias("icu_day")
     )
 
-    # Vent-day columns (shared by SAT & SBT notebooks)
-    VENT_DAY_ANCHOR_HOUR = 0  # calendar day (midnight-to-midnight)
+    # ICU day date (calendar date, shared by SAT & SBT notebooks)
+    _ICU_DAY_ANCHOR_HOUR = 0  # calendar day (midnight-to-midnight)
 
     wide = wide.with_columns(
-        (pl.col("recorded_dttm") - pl.duration(hours=VENT_DAY_ANCHOR_HOUR))
+        (pl.col("recorded_dttm") - pl.duration(hours=_ICU_DAY_ANCHOR_HOUR))
         .dt.truncate("1d")
-        .alias("vent_day_date")
+        .alias("icu_day_date")
     )
 
-    wide = wide.with_columns(
-        pl.col("vent_day_date")
-        .rank("dense")
-        .over("hospitalization_id")
-        .cast(pl.Int64)
-        .alias("vent_day_num")
-    )
-
+    # Composite key: hospitalization + ICU day
     wide = wide.with_columns(
         pl.concat_str([
             pl.col("hospitalization_id").cast(pl.Utf8),
             pl.lit("_day_"),
-            pl.col("vent_day_num").cast(pl.Utf8),
-        ]).alias("hosp_id_day_key")
+            pl.col("icu_day").cast(pl.Utf8),
+        ]).alias("hosp_id_icu_day")
     )
+
+    # IMV-day flag & numbering (imv_day = subset of ICU days with overnight IMV)
+    _overnight = wide.filter(
+        (pl.col("recorded_dttm") >= pl.col("icu_day_date") - pl.duration(hours=2))
+        & (pl.col("recorded_dttm") <= pl.col("icu_day_date") + pl.duration(hours=6))
+    )
+    _imv_day_keys = (
+        _overnight
+        .filter(pl.col("device_category").str.to_lowercase() == "imv")
+        .select("hosp_id_icu_day")
+        .unique()
+    )
+    wide = wide.with_columns(
+        pl.col("hosp_id_icu_day")
+        .is_in(_imv_day_keys["hosp_id_icu_day"])
+        .alias("is_imv_day")
+    )
+    _imv_ranking = (
+        wide.filter(pl.col("is_imv_day"))
+        .select("hospitalization_id", "icu_day_date", "hosp_id_icu_day")
+        .unique(subset=["hosp_id_icu_day"])
+        .sort("hospitalization_id", "icu_day_date")
+        .with_columns(
+            pl.col("icu_day_date")
+            .rank("dense")
+            .over("hospitalization_id")
+            .cast(pl.Int64)
+            .alias("imv_day")
+        )
+        .select("hosp_id_icu_day", "imv_day")
+    )
+    wide = wide.join(_imv_ranking, on="hosp_id_icu_day", how="left")
+    _n_imv_days = wide.filter(pl.col("is_imv_day")).select("hosp_id_icu_day").n_unique()
+    _n_total_days = wide.select("hosp_id_icu_day").n_unique()
+    print(f"IMV days (overnight): {_n_imv_days:,} / {_n_total_days:,} total patient-days")
 
     print(f"Wide dataset: {wide.height:,} rows x {wide.width} cols")
     print(f"\nNull counts (before forward-fill):")
@@ -363,7 +391,7 @@ def _(assess_wide, cohort, meds_wide, pl, resp_df, spo2_df):
     # Forward-fill within each patient (all columns except device_name, mode_name)
     _no_fill = {
         "hospitalization_id", "recorded_dttm", "device_name", "mode_name", "icu_day",
-        "vent_day_date", "vent_day_num", "hosp_id_day_key",
+        "icu_day_date", "hosp_id_icu_day", "is_imv_day", "imv_day",
         # SAT/SBT flowsheet flags are point-in-time; forward-fill bleeds across days
         "sat_screen_pass_fail", "sat_screen_performed",
         "sat_delivery_pass_fail", "sat_delivery_performed",

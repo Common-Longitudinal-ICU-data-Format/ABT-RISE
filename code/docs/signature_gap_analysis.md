@@ -20,7 +20,7 @@ day instead of 00:00 → 23:59.
 
 **What needs to change:**
 - `02_wide_dataset.py`: Change `VENT_DAY_ANCHOR_HOUR` from `0` to `6`.
-- All downstream scripts (`03_sat.py`, `04_sbt*.py`) inherit `vent_day_date`
+- All downstream scripts (`03_sat.py`, `04_sbt*.py`) inherit `icu_day_date`
   from the wide dataset, so no changes needed there for anchoring itself.
 - Verify the overnight window math still holds: the 22:00–06:00 window
   relative to a 06:00-anchored day means 22:00 on the *prior calendar day*

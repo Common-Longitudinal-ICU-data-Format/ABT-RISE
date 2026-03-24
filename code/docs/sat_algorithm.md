@@ -105,19 +105,19 @@ Observations are grouped into ventilator-days using **midnight-to-midnight calen
 days** (`VENT_DAY_ANCHOR_HOUR = 0`).
 
 ```
-vent_day_date = recorded_dttm truncated to date (midnight)
+icu_day_date = recorded_dttm truncated to date (midnight)
 ```
 
 Each patient's vent-days are numbered sequentially:
 
 ```
-vent_day_num = dense_rank(vent_day_date) over hospitalization_id
+icu_day = dense_rank(icu_day_date) over hospitalization_id
 ```
 
 A composite key ties each row to its vent-day:
 
 ```
-hosp_id_day_key = "{hospitalization_id}_day_{vent_day_num}"
+hosp_id_icu_day = "{hospitalization_id}_day_{icu_day}"
 ```
 
 > **Why calendar days?** Calendar-day grouping aligns with clinical workflows (shift
@@ -135,7 +135,7 @@ screened using observations in the **22:00-06:00 overnight window**.
 
 ### 4.1 Window Definition
 
-For a vent-day with `vent_day_date = D`:
+For a vent-day with `icu_day_date = D`:
 - **Start**: `D - 2 hours` = previous day 22:00
 - **End**: `D + 6 hours` = current day 06:00
 
@@ -145,7 +145,7 @@ For a vent-day with `vent_day_date = D`:
 
 ### 4.2 Three Quick-Check Conditions
 
-For each `hosp_id_day_key`, three boolean flags are computed over the overnight window:
+For each `hosp_id_icu_day`, three boolean flags are computed over the overnight window:
 
 | Flag | Condition | Passing value |
 |------|-----------|---------------|
@@ -308,7 +308,7 @@ The row-level flags are collapsed into one row per ventilator-day.
 
 ### 8.1 Vent-Day Filter
 
-Not all `hosp_id_day_key` values represent true ventilator-days. Two conditions must
+Not all `hosp_id_icu_day` values represent true ventilator-days. Two conditions must
 both be met:
 
 1. **Post-intubation**: the vent-day date is on or after the patient's `intubation_time`
@@ -317,7 +317,7 @@ both be met:
    window for that day
 
 > **Why the cross-day IMV join?** With calendar-day grouping, an observation at 22:30
-> belongs to the *previous* calendar day's `hosp_id_day_key`. But that 22:30 IMV
+> belongs to the *previous* calendar day's `hosp_id_icu_day`. But that 22:30 IMV
 > observation is clinically relevant to *today's* overnight window (22:00-06:00). The
 > cross-day join re-checks IMV presence using the actual clock-time window rather than
 > the grouping key, ensuring days aren't incorrectly excluded.
@@ -415,8 +415,8 @@ All outputs are written to `output_phi/sat_standard/`.
                                       v
                         ┌─────────────────────────────┐
                         │  Calendar-Day Grouping       │
-                        │  vent_day_date, vent_day_num │
-                        │  hosp_id_day_key             │
+                        │  icu_day_date, icu_day │
+                        │  hosp_id_icu_day             │
                         └─────────────┬───────────────┘
                                       │
                                       v
@@ -507,7 +507,7 @@ nurse documentation event across all subsequent timestamps, inflating the ground
 ### Why is the cross-day IMV join needed?
 
 Calendar-day grouping assigns a 22:30 observation to the previous calendar day's
-`hosp_id_day_key`. But that observation falls within the current day's 22:00-06:00
+`hosp_id_icu_day`. But that observation falls within the current day's 22:00-06:00
 overnight window. The cross-day join re-checks IMV using clock-time boundaries rather
 than grouping keys.
 
