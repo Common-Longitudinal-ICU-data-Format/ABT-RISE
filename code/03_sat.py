@@ -673,6 +673,12 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
         .any()
         .alias("opioid_prior"),
         (pl.col("max_paralytics") > 0).any().alias("nmb_prior"),
+        # Individual sedation med flags
+        (pl.col("fentanyl") > 0).any().alias("fentanyl_prior"),
+        (pl.col("hydromorphone") > 0).any().alias("hydromorphone_prior"),
+        (pl.col("morphine") > 0).any().alias("morphine_prior"),
+        (pl.col("lorazepam") > 0).any().alias("lorazepam_prior"),
+        (pl.col("midazolam") > 0).any().alias("midazolam_prior"),
         pl.col("rass").median().alias("rass_prior"),
         pl.col("nee").median().alias("nee_prior"),
         pl.col("fio2_set").median().alias("fio2_prior"),
@@ -681,6 +687,8 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
     )
     _prior_cols = [
         "bzd_prior", "propofol_prior", "opioid_prior", "nmb_prior",
+        "fentanyl_prior", "hydromorphone_prior", "morphine_prior",
+        "lorazepam_prior", "midazolam_prior",
         "rass_prior", "nee_prior", "fio2_prior", "peep_prior", "gcs_prior",
     ]
     _prior = _day_agg.with_columns(

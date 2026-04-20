@@ -55,6 +55,71 @@ def _(DATA_DIR, OUTPUT_PHI, Path, pl):
 
 
 @app.cell
+def _(OUTPUT_PHI, cohort, pl):
+    # Count intubation events from resp waterfall using 2-row lag detection (01_cohort.py:386-391)
+    _raw_wf = (
+        pl.read_parquet(OUTPUT_PHI / "resp_waterfall_cohort.parquet")
+        .filter(pl.col("hospitalization_id").is_in(cohort["hospitalization_id"]))
+        .with_columns(pl.col("recorded_dttm").dt.replace_time_zone(None))
+    )
+
+    def _count_intubations(wf):
+        """Apply 2-row lag intubation detection and count per hospitalization."""
+        wf = (
+            wf.sort(["hospitalization_id", "recorded_dttm"])
+            .with_columns(
+                (pl.col("device_category").str.to_lowercase() == "imv")
+                .cast(pl.Int8).alias("is_imv")
+            )
+            .with_columns([
+                pl.col("is_imv").shift(1).over("hospitalization_id").alias("lag1"),
+                pl.col("is_imv").shift(2).over("hospitalization_id").alias("lag2"),
+            ])
+        )
+        return wf.filter(
+            (pl.col("is_imv") == 1)
+            & ((pl.col("lag1") == 0) | pl.col("lag1").is_null())
+            & ((pl.col("lag2") == 0) | pl.col("lag2").is_null())
+        ).group_by("hospitalization_id").agg(pl.len().alias("n"))
+
+    # Whole hospitalization
+    _hosp_counts = _count_intubations(_raw_wf)
+
+    # Index ICU stay only (windowed to first_icu_start → first_icu_end)
+    _icu_wf = (
+        _raw_wf
+        .join(
+            cohort.select("hospitalization_id",
+                          pl.col("first_icu_start").dt.replace_time_zone(None),
+                          pl.col("first_icu_end").dt.replace_time_zone(None)),
+            on="hospitalization_id", how="inner",
+        )
+        .filter(
+            (pl.col("recorded_dttm") >= pl.col("first_icu_start"))
+            & (pl.col("recorded_dttm") <= pl.col("first_icu_end"))
+        )
+        .drop("first_icu_start", "first_icu_end")
+    )
+    _icu_counts = _count_intubations(_icu_wf)
+
+    mv_counts = (
+        cohort.select("hospitalization_id")
+        .join(_hosp_counts.rename({"n": "mv_count_in_whole_hospitalization"}),
+              on="hospitalization_id", how="left")
+        .join(_icu_counts.rename({"n": "mv_count_in_index_icu_stay"}),
+              on="hospitalization_id", how="left")
+        .with_columns(
+            pl.col("mv_count_in_whole_hospitalization").fill_null(1),
+            pl.col("mv_count_in_index_icu_stay").fill_null(1),
+        )
+    )
+
+    print(f"MV count (whole hosp):\n{mv_counts['mv_count_in_whole_hospitalization'].value_counts().sort('mv_count_in_whole_hospitalization')}")
+    print(f"\nMV count (index ICU):\n{mv_counts['mv_count_in_index_icu_stay'].value_counts().sort('mv_count_in_index_icu_stay')}")
+    return (mv_counts,)
+
+
+@app.cell
 def _(cohort, patient, pl, sat, sbt):
     # ── Merge SAT + SBT on hosp_id_icu_day ──
     # Take SAT as base; add SBT-specific columns
@@ -125,11 +190,21 @@ def _(merged, pl):
         # Vent start date
         pl.col("intubation_time").dt.date().alias("vent_start_date"),
 
-        # Sedation prior (binary: any sedation charted prior day)
+        # Individual sedation med flags (binary 0/1)
+        pl.col("propofol_prior").fill_null(False).cast(pl.Int32).alias("propofol_prior_flag"),
+        pl.col("fentanyl_prior").fill_null(False).cast(pl.Int32).alias("fentanyl_prior_flag"),
+        pl.col("hydromorphone_prior").fill_null(False).cast(pl.Int32).alias("hydromorphone_prior_flag"),
+        pl.col("morphine_prior").fill_null(False).cast(pl.Int32).alias("morphine_prior_flag"),
+        pl.col("lorazepam_prior").fill_null(False).cast(pl.Int32).alias("lorazepam_prior_flag"),
+        pl.col("midazolam_prior").fill_null(False).cast(pl.Int32).alias("midazolam_prior_flag"),
+        pl.col("nmb_prior").fill_null(False).cast(pl.Int32).alias("nmb_prior_flag"),
+
+        # Sedation prior (binary: any sedation charted prior day — includes NMB)
         (
             pl.col("propofol_prior").fill_null(False)
             | pl.col("bzd_prior").fill_null(False)
             | pl.col("opioid_prior").fill_null(False)
+            | pl.col("nmb_prior").fill_null(False)
         ).cast(pl.Int32).alias("sedation_prior"),
     )
 
@@ -174,7 +249,12 @@ def _(merged, pl):
         "peep_prior": "PEEP_prior",
         "nee_prior": "NEE_prior",
     })
-    _clinical_cols = ["SOFA_prior", "FiO2_prior", "PEEP_prior", "NEE_prior", "sedation_prior"]
+    _clinical_cols = [
+        "SOFA_prior", "FiO2_prior", "PEEP_prior", "NEE_prior", "sedation_prior",
+        "propofol_prior_flag", "fentanyl_prior_flag", "hydromorphone_prior_flag",
+        "morphine_prior_flag", "lorazepam_prior_flag", "midazolam_prior_flag",
+        "nmb_prior_flag",
+    ]
 
     file1 = f1.select(
         _hospital_cols + _id_cols + _exposure_cols + _flowsheet_cols + _outcome_cols + _clinical_cols
@@ -189,7 +269,7 @@ def _(merged, pl):
 
 
 @app.cell
-def _(cohort, file1, patient, pl, sat):
+def _(cohort, file1, mv_counts, patient, pl, sat):
     # ── Build File 2: Hospitalization-Level (one row per hospitalization) ──
 
     # Aggregate from File 1
@@ -212,6 +292,13 @@ def _(cohort, file1, patient, pl, sat):
             pl.col("PEEP_prior").mean().alias("PEEP_mean"),
             pl.col("NEE_prior").mean().alias("NEE_mean"),
             pl.col("sedation_prior").mean().alias("sedation_mean"),
+            pl.col("propofol_prior_flag").mean().alias("propofol_mean"),
+            pl.col("fentanyl_prior_flag").mean().alias("fentanyl_mean"),
+            pl.col("hydromorphone_prior_flag").mean().alias("hydromorphone_mean"),
+            pl.col("morphine_prior_flag").mean().alias("morphine_mean"),
+            pl.col("lorazepam_prior_flag").mean().alias("lorazepam_mean"),
+            pl.col("midazolam_prior_flag").mean().alias("midazolam_mean"),
+            pl.col("nmb_prior_flag").mean().alias("nmb_mean"),
 
             # Total vent days
             pl.len().alias("n_vent_days"),
@@ -233,6 +320,7 @@ def _(cohort, file1, patient, pl, sat):
     file2 = (
         _cohort_info.join(_agg, on="hospitalization_id", how="left")
         .join(_cci, on="hospitalization_id", how="left")
+        .join(mv_counts, on="hospitalization_id", how="left")
     ).with_columns(pl.col("n_vent_days").fill_null(0))
 
     # Compute outcome columns
@@ -321,8 +409,12 @@ def _(cohort, file1, patient, pl, sat):
         "death_flag", "days_to_death",
         "VFD_28", "ICU_LOS",
     ]
-    _clinical_cols = ["SOFA_mean", "FiO2_mean", "PEEP_mean", "NEE_mean", "sedation_mean"]
-    _meta_cols = ["n_vent_days", "site_has_flowsheet_sat", "site_has_flowsheet_sbt"]
+    _clinical_cols = [
+        "SOFA_mean", "FiO2_mean", "PEEP_mean", "NEE_mean", "sedation_mean",
+        "propofol_mean", "fentanyl_mean", "hydromorphone_mean",
+        "morphine_mean", "lorazepam_mean", "midazolam_mean", "nmb_mean",
+    ]
+    _meta_cols = ["n_vent_days", "mv_count_in_whole_hospitalization", "mv_count_in_index_icu_stay", "site_has_flowsheet_sat", "site_has_flowsheet_sbt"]
 
     file2 = file2.select(
         _hospital_cols + _id_cols + _demo_cols + _prop_cols
