@@ -15,6 +15,7 @@ def _():
 def _():
     import polars as pl
     import json
+    from datetime import timedelta
     from pathlib import Path
 
     _config_path = Path(__file__).parent.parent / "clif_config.json"
@@ -27,9 +28,23 @@ def _():
     OUTPUT_ANALYSIS = OUTPUT_PHI / "analysis"
     OUTPUT_ANALYSIS.mkdir(parents=True, exist_ok=True)
 
+    # Consensus windows for intubation episode counting
+    CONSENSUS_INTUB_WINDOW_MIN = 15   # IMV must stay IMV this long after start
+    CONSENSUS_EXTUB_WINDOW_MIN = 30   # non-IMV must stay non-IMV this long to close an episode
+
     print(f"Site: {SITE_NAME}")
     print(f"Output: {OUTPUT_ANALYSIS}")
-    return DATA_DIR, OUTPUT_ANALYSIS, OUTPUT_PHI, Path, SITE_NAME, pl
+    return (
+        CONSENSUS_EXTUB_WINDOW_MIN,
+        CONSENSUS_INTUB_WINDOW_MIN,
+        DATA_DIR,
+        OUTPUT_ANALYSIS,
+        OUTPUT_PHI,
+        Path,
+        SITE_NAME,
+        pl,
+        timedelta,
+    )
 
 
 @app.cell
@@ -55,32 +70,113 @@ def _(DATA_DIR, OUTPUT_PHI, Path, pl):
 
 
 @app.cell
-def _(OUTPUT_PHI, cohort, pl):
-    # Count intubation events from resp waterfall using 2-row lag detection (01_cohort.py:386-391)
+def _(
+    CONSENSUS_EXTUB_WINDOW_MIN,
+    CONSENSUS_INTUB_WINDOW_MIN,
+    OUTPUT_PHI,
+    cohort,
+    pl,
+    timedelta,
+):
+    # Count intubation episodes via state machine with consensus windows.
+    # An episode is counted when a non-IMV→IMV transition has IMV stable for
+    # CONSENSUS_INTUB_WINDOW_MIN forward. An episode closes on either (a) trach
+    # collar row or (b) IMV→non-IMV transition with non-IMV stable for
+    # CONSENSUS_EXTUB_WINDOW_MIN forward. If trach collar appears before any
+    # IMV row, count=1 and the patient is skipped.
     _raw_wf = (
         pl.read_parquet(OUTPUT_PHI / "resp_waterfall_cohort.parquet")
         .filter(pl.col("hospitalization_id").is_in(cohort["hospitalization_id"]))
         .with_columns(pl.col("recorded_dttm").dt.replace_time_zone(None))
     )
 
+    _intub_win = timedelta(minutes=CONSENSUS_INTUB_WINDOW_MIN)
+    _extub_win = timedelta(minutes=CONSENSUS_EXTUB_WINDOW_MIN)
+
     def _count_intubations(wf):
-        """Apply 2-row lag intubation detection and count per hospitalization."""
-        wf = (
-            wf.sort(["hospitalization_id", "recorded_dttm"])
-            .with_columns(
-                (pl.col("device_category").str.to_lowercase() == "imv")
-                .cast(pl.Int8).alias("is_imv")
+        """Count confirmed intubation episodes per hospitalization."""
+        if wf.height == 0:
+            return pl.DataFrame(
+                {"hospitalization_id": [], "n": []},
+                schema={"hospitalization_id": pl.String, "n": pl.Int64},
             )
-            .with_columns([
-                pl.col("is_imv").shift(1).over("hospitalization_id").alias("lag1"),
-                pl.col("is_imv").shift(2).over("hospitalization_id").alias("lag2"),
-            ])
+
+        prepped = (
+            wf.sort(["hospitalization_id", "recorded_dttm"])
+            .with_columns(pl.col("device_category").str.to_lowercase().alias("_dev_lc"))
+            .with_columns(
+                (pl.col("_dev_lc") == "imv").cast(pl.Int8).alias("_is_imv"),
+                (
+                    (pl.col("_dev_lc") == "trach collar")
+                    | (pl.col("tracheostomy").fill_null(0).cast(pl.Boolean))
+                ).alias("_is_trach"),
+            )
+            .filter(pl.col("_dev_lc").is_not_null() | pl.col("_is_trach"))
+            .select("hospitalization_id", "recorded_dttm", "_is_imv", "_is_trach")
         )
-        return wf.filter(
-            (pl.col("is_imv") == 1)
-            & ((pl.col("lag1") == 0) | pl.col("lag1").is_null())
-            & ((pl.col("lag2") == 0) | pl.col("lag2").is_null())
-        ).group_by("hospitalization_id").agg(pl.len().alias("n"))
+
+        results = []
+        for (hosp_id,), grp in prepped.group_by("hospitalization_id", maintain_order=True):
+            rows = grp.rows()  # tuples: (hosp_id, recorded_dttm, is_imv, is_trach)
+            times = [r[1] for r in rows]
+            imvs = [r[2] for r in rows]
+            trachs = [r[3] for r in rows]
+            n = len(rows)
+
+            # Direct trach rule: if trach sentinel fires before any IMV → count=1, skip
+            first_imv_idx = next((i for i, v in enumerate(imvs) if v == 1), None)
+            first_trach_idx = next((i for i, v in enumerate(trachs) if v), None)
+            if first_trach_idx is not None and (
+                first_imv_idx is None or first_trach_idx < first_imv_idx
+            ):
+                results.append({"hospitalization_id": hosp_id, "n": 1})
+                continue
+
+            count = 0
+            on_vent = False
+            for i in range(n):
+                # Trach sentinel (device=="trach collar" OR tracheostomy==True):
+                # close any open episode and stop all further counting.
+                if trachs[i]:
+                    on_vent = False
+                    break
+
+                t = times[i]
+                imv = imvs[i]
+
+                if not on_vent and imv == 1:
+                    # 15-min forward consensus: no is_imv==0 in (t, t+window]
+                    deadline = t + _intub_win
+                    contradicted = False
+                    j = i + 1
+                    while j < n and times[j] <= deadline:
+                        if imvs[j] == 0:
+                            contradicted = True
+                            break
+                        j += 1
+                    if not contradicted:
+                        count += 1
+                        on_vent = True
+
+                elif on_vent and imv == 0:
+                    # 30-min forward consensus: no is_imv==1 in (t, t+window]
+                    deadline = t + _extub_win
+                    contradicted = False
+                    j = i + 1
+                    while j < n and times[j] <= deadline:
+                        if imvs[j] == 1:
+                            contradicted = True
+                            break
+                        j += 1
+                    if not contradicted:
+                        on_vent = False
+
+            results.append({"hospitalization_id": hosp_id, "n": count})
+
+        return pl.DataFrame(
+            results,
+            schema={"hospitalization_id": prepped.schema["hospitalization_id"], "n": pl.Int64},
+        )
 
     # Whole hospitalization
     _hosp_counts = _count_intubations(_raw_wf)
