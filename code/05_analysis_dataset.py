@@ -108,7 +108,7 @@ def _(
                 (pl.col("_dev_lc") == "imv").cast(pl.Int8).alias("_is_imv"),
                 (
                     (pl.col("_dev_lc") == "trach collar")
-                    | (pl.col("tracheostomy").fill_null(0).cast(pl.Boolean))
+                    | (pl.col("tracheostomy").cast(pl.Boolean).fill_null(False))
                 ).alias("_is_trach"),
             )
             .filter(pl.col("_dev_lc").is_not_null() | pl.col("_is_trach"))
