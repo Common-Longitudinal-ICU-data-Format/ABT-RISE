@@ -34,7 +34,15 @@ Patients on invasive mechanical ventilation (IMV) at any point during a hospital
    - `data_directory` — absolute path to your CLIF parquet tables.
    - `filetype` — `parquet` (default).
    - `timezone` — IANA name, e.g. `US/Central`.
-3. Leave `abtrise_input_dir` (default `./output_phi/analysis`) and `abtrise_output_dir` (default `./outputs`) at their defaults unless your storage layout differs. The Python steps write to `abtrise_input_dir`; the R steps read from it.
+3. Leave `abtrise_input_dir` (default `./output_phi/analysis`) and `abtrise_output_dir` (default `./output_to_share`) at their defaults unless your storage layout differs. Python step 5 writes the analysis parquet files to `abtrise_input_dir`; the R steps read from it and write all shareable tables / figures / model summaries to `abtrise_output_dir` (same folder Python uses for shareable CONSORTs and Table 1s).
+
+### Where outputs land
+
+- `output_phi/` — site-internal intermediate parquet files (in `.gitignore`, do not share).
+- `output_to_share/` — everything safe to send to the coordinating center:
+  - `consort.{json,png}`, `sat_standard/`, `sbt_both_stabilities/` (from Python).
+  - `tables/`, `figures/{a2,a3,a4,a5,a6}/`, `models/{a2,a3,a4,a5,a6}/`, `diagnostics/` (from R).
+  - All R output filenames are auto-prefixed with `site_name` (e.g. `RUSH_table1.csv`).
 
 ## Prerequisites
 

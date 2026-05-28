@@ -3,7 +3,7 @@
   "data_directory": "/path/to/clif/tables",
   "filetype": "parquet",
   "timezone": "US/Central",
-  "output_directory": "./output",
+  "output_directory": "./output_to_share",
   "abtrise_input_dir": "./output_phi/analysis",
-  "abtrise_output_dir": "./outputs"
+  "abtrise_output_dir": "./output_to_share"
 }
