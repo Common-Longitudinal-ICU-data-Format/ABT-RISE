@@ -41,7 +41,7 @@
 # =============================================================================
 
 # --- Load setup (runs Sections 0-2 automatically) ----------------------------
-source(here::here("ABTRISE_00_setup_c.R"))
+source(here::here("code", "ABTRISE_00_setup_c.R"))
 
 # SECTION 2-B: ANALYSIS 6 -- HOSPITAL BENCHMARKING
 # =============================================================================

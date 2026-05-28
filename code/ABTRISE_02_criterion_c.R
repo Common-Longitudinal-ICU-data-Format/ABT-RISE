@@ -38,7 +38,7 @@
 # =============================================================================
 
 # --- Load setup (runs Sections 0-2 automatically) ----------------------------
-source(here::here("ABTRISE_00_setup_c.R"))
+source(here::here("code", "ABTRISE_00_setup_c.R"))
 
 cat("============================================================\n")
 cat("ANALYSIS 2: Criterion Validity\n")
