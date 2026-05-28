@@ -71,7 +71,7 @@ results <- list()
 
 for (script in scripts) {
 
-  script_path <- here::here(script)
+  script_path <- here::here("code", script)
 
   cat("────────────────────────────────────────────────────────────\n")
   cat("▶  Running:", script, "\n")
@@ -157,16 +157,29 @@ cat("║  Finished:      ", formatC(format(run_end, "%Y-%m-%d %H:%M:%S"),
                                    width = 44, flag = "-"), "║\n")
 cat("╚══════════════════════════════════════════════════════════════╝\n\n")
 
-# Flag any failures
-errors <- Filter(function(r) r$status == "error", results)
+# Flag any failures or skips
+errors  <- Filter(function(r) r$status == "error",   results)
+skipped <- Filter(function(r) r$status == "skipped", results)
+
 if (length(errors) > 0) {
   cat("⚠  WARNING:", length(errors), "script(s) failed:\n")
   for (nm in names(errors)) {
     cat("   -", nm, ":", errors[[nm]]$message, "\n")
   }
-  cat("\n   Check outputs/ to confirm which files were produced.\n")
-  cat("   Contact the coordinating center if errors persist.\n\n")
-} else {
+}
+if (length(skipped) > 0) {
+  cat("⚠  WARNING:", length(skipped), "script(s) skipped:\n")
+  for (nm in names(skipped)) {
+    cat("   -", nm, ":", skipped[[nm]]$message, "\n")
+  }
+}
+
+if (length(errors) == 0 && length(skipped) == 0) {
   cat("All scripts completed successfully.\n")
-  cat("Outputs are in: outputs/\n\n")
+  cat("Outputs are in: ", out_dir, "\n\n", sep = "")
+} else {
+  cat("\n   Check ", out_dir, " to confirm which files were produced.\n", sep = "")
+  cat("   Contact the coordinating center if errors persist.\n\n")
+  # Non-zero exit so the shell wrapper (run_all.sh / run_all.ps1) flags it.
+  quit(status = 1, save = "no")
 }
