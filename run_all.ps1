@@ -19,6 +19,9 @@ function Write-Log {
     $Message | Tee-Object -FilePath $LogFile -Append
 }
 
+$RED   = [char]27 + "[1;31m"
+$RESET = [char]27 + "[0m"
+
 function Invoke-Step {
     param(
         [string]$Name,
@@ -34,7 +37,7 @@ function Invoke-Step {
         Write-Log "  PASS: $Name"
         $script:Passed++
     } catch {
-        Write-Log "  FAIL: $Name ($_)"
+        Write-Log "  ${RED}FAIL: $Name ($_)${RESET}"
         $script:Failed++
     }
     Write-Log ""
@@ -113,7 +116,7 @@ if ($RAvailable) {
     Write-Log "    3. Click Source (or press Ctrl + Shift + Enter)."
     Write-Log ""
     Write-Log "  That single source() will run all four analysis scripts in order:"
-    Write-Log "    - code/ABTRISE_00_setup_c.R          (auto-sourced by the next three)"
+    Write-Log "    - code/ABTRISE_01_setup_c.R          (auto-sourced by the next three)"
     Write-Log "    - code/ABTRISE_02_criterion_c.R"
     Write-Log "    - code/ABTRISE_345_outcomes_c.R"
     Write-Log "    - code/ABTRISE_06_benchmarking_c.R"
@@ -132,7 +135,11 @@ Write-Log "----------------------------------------"
 Write-Log "  SUMMARY"
 Write-Log "----------------------------------------"
 Write-Log "  Passed: $($script:Passed) / $($script:Total)"
-Write-Log "  Failed: $($script:Failed) / $($script:Total)"
+if ($script:Failed -gt 0) {
+    Write-Log "  ${RED}Failed: $($script:Failed) / $($script:Total)${RESET}"
+} else {
+    Write-Log "  Failed: $($script:Failed) / $($script:Total)"
+}
 Write-Log "  Log:    $LogFile"
 Write-Log "  Finished: $(Get-Date)"
 

@@ -4,14 +4,14 @@
 # + Exploratory Diagnostics to Interpret Agreement Results
 #
 # SCRIPTS IN THIS SERIES:
-#   ABTRISE_00_setup.R          -- run directly to review data quality
+#   ABTRISE_01_setup.R          -- run directly to review data quality
 #   ABTRISE_02_criterion.R      <- YOU ARE HERE
 #   ABTRISE_345_outcomes.R
 #   ABTRISE_06_benchmarking.R
 #
 # HOW TO RUN:
 #   Open this file and click Source (or run source("ABTRISE_02_criterion.R"))
-#   Setup runs automatically -- do NOT run ABTRISE_00_setup.R separately first.
+#   Setup runs automatically -- do NOT run ABTRISE_01_setup.R separately first.
 #
 # WHAT THIS SCRIPT PRODUCES:
 #   outputs/models/a2/    A2_SAT_metrics.csv, A2_SBT_metrics.csv,
@@ -38,7 +38,7 @@
 # =============================================================================
 
 # --- Load setup (runs Sections 0-2 automatically) ----------------------------
-source(here::here("code", "ABTRISE_00_setup_c.R"))
+source(here::here("code", "ABTRISE_01_setup_c.R"))
 
 cat("============================================================\n")
 cat("ANALYSIS 2: Criterion Validity\n")
@@ -65,14 +65,12 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
   # Metrics:            sensitivity, specificity, PPV, NPV, accuracy,
   #                     F1, MCC, Cohen's kappa
 
-  B_BOOTSTRAP <- 1000L
-  # *** PILOT ONLY -- change to 10000L before submission ***
+  B_BOOTSTRAP <- 10000L
 
   cat("Bootstrap configuration:\n")
   cat("  B =", B_BOOTSTRAP, "\n")
   if (B_BOOTSTRAP < 10000L)
-    cat("  *** PILOT SETTING: B =", B_BOOTSTRAP,
-        "-- change to 10,000 before submission ***\n")
+
   cat("  Method: BCa (bias-corrected accelerated)\n")
   cat("  Cluster unit: hospitalization_id (= IMV episode)\n\n")
 

@@ -3,14 +3,14 @@
 # ANALYSES 3, 4, 5 -- Construct Validity Outcomes
 #
 # SCRIPTS IN THIS SERIES:
-#   ABTRISE_00_setup.R          -- run directly to review data quality
+#   ABTRISE_01_setup.R          -- run directly to review data quality
 #   ABTRISE_02_criterion.R
 #   ABTRISE_345_outcomes.R      <- YOU ARE HERE
 #   ABTRISE_06_benchmarking.R
 #
 # HOW TO RUN:
 #   Open this file and click Source (or run source("ABTRISE_345_outcomes.R"))
-#   Setup runs automatically -- do NOT run ABTRISE_00_setup.R separately first.
+#   Setup runs automatically -- do NOT run ABTRISE_01_setup.R separately first.
 #
 # WHAT THIS SCRIPT PRODUCES:
 #   outputs/models/a3/    A3_dt_primary_coefs.csv, A3_dt_primary_re_variance.csv,
@@ -59,7 +59,7 @@
 # =============================================================================
 
 # --- Load setup (runs Sections 0-2 automatically) ----------------------------
-source(here::here("code", "ABTRISE_00_setup_c.R"))
+source(here::here("code", "ABTRISE_01_setup_c.R"))
 
 
 cat("============================================================\n")
@@ -124,7 +124,7 @@ cat("-- 3.2 Primary: Discrete-time logistic regression\n")
 
 # Check for single-level factors -- drop from fixed effects if only one level
 # present at this site (contrast cannot be estimated).
-# drop_single_level() is defined in ABTRISE_00_setup.R and available via source().
+# drop_single_level() is defined in ABTRISE_01_setup.R and available via source().
 covariates_baseline_dt <- drop_single_level(covariates_baseline, df_dt)
 covariates_tv_dt       <- drop_single_level(covariates_tv,       df_dt)
 
@@ -458,7 +458,7 @@ fig_A3_forest <- ggplot(forest_data_A3,
       "(ns(vent_day, df=3); exact tied-event likelihood).\n",
       "Fine-Gray uses episode-level SAT/SBT proportion; ",
       "Cox and discrete-time use daily binary exposure.\n",
-      "Preliminary single-site results -- interpret after pooling."
+  
     )
   ) +
   theme_abtrise() +
@@ -842,7 +842,7 @@ fig_A4 <- ggplot(a4_plot_data,
       "Two-part model replaces ZINB (Hajage NEJM Evidence 2025).\n",
       "SBT null in Part 2 reflects survivor bias -- not a model failure ",
       "(see Analysis 5 mortality results).\n",
-      "Preliminary single-site results -- interpret after pooling."
+     
     )
   ) +
   theme_abtrise() +
@@ -1249,7 +1249,6 @@ fig_A5 <- ggplot(a5_plot_data,
       "Overdispersion stat: ", round(dispersion_stat, 2),
       " (", dispersion_flag, "). ",
       "Model-based SEs only; no sandwich SEs (Cameron & Miller 2015).\n",
-      "Preliminary single-site results -- interpret after pooling."
     )
   ) +
   theme_abtrise() +
@@ -1414,7 +1413,7 @@ cat("SENSITIVITY ANALYSIS: Age < 65 Subgroup\n")
 cat("============================================================\n\n")
 
 # --- Build age-restricted datasets -------------------------------------------
-# age_u65 derived flag created in ABTRISE_00_setup.R Section 2.6
+# age_u65 derived flag created in ABTRISE_01_setup.R Section 2.6
 
 n_u65_hosp <- sum(df_hosp$age_u65 == 1, na.rm = TRUE)
 n_u65_pp   <- sum(df_pp$age_u65   == 1, na.rm = TRUE)

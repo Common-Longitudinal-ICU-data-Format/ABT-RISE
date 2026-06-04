@@ -3,18 +3,18 @@
 #
 # PURPOSE:
 #   Runs all four site-level analysis scripts in sequence with a single
-#   Source click. Each script sources ABTRISE_00_setup.R automatically,
+#   Source click. Each script sources ABTRISE_01_setup.R automatically,
 #   so data is loaded fresh for each analysis.
 #
 # HOW TO RUN:
-#   1. Edit clif_config.json at repo root (site_name, abtrise_input_dir,
-#      abtrise_output_dir).
-#   2. Open this file in RStudio.
-#   3. Click Source (or Ctrl+Shift+Enter).
-#   4. All outputs will appear in the configured output directory.
+#   1. Edit clif_config.json at the repo root (site_name, abtrise_input_dir,
+#      abtrise_output_dir). No edits needed in this file.
+#   2. Open this file in RStudio
+#   3. Click Source (or Ctrl+Shift+Enter)
+#   4. All outputs will appear in output_to_share/ subfolders
 #
 # SCRIPTS RUN IN ORDER:
-#   1. ABTRISE_00_setup.R       -- data load, diagnostics, Table 1
+#   1. ABTRISE_01_setup.R       -- data load, diagnostics, Table 1
 #   2. ABTRISE_02_criterion.R   -- criterion validity (A2)
 #   3. ABTRISE_345_outcomes.R   -- construct validity (A3, A4, A5, SA)
 #   4. ABTRISE_06_benchmarking.R -- hospital benchmarking (A6)
@@ -25,7 +25,7 @@
 #   - Errors are logged to the console with the script name and message
 #   - Check outputs/ after running to confirm all expected files were created
 #
-# ESTIMATED RUNTIME (single-hospital site, pilot B=1000):
+# ESTIMATED RUNTIME (single-hospital site):
 #   ~5-15 min depending on data size. Multi-hospital sites or B=10000
 #   will take longer, primarily due to the bootstrap in ABTRISE_02.
 #
@@ -35,11 +35,18 @@
 # =============================================================================
 # SECTION 0: SITE CONFIGURATION
 # =============================================================================
-# Sites edit clif_config.json at repo root, not this file.
-# Helper loads site_id, data_dir, out_dir from that config.
+# Site config (site_id, data_dir, out_dir) is read from clif_config.json at
+# the repo root via ABTRISE_config.R. Sites edit clif_config.json only --
+# no edits needed in this file.
 
 suppressPackageStartupMessages(library(here))
 source(here::here("code", "ABTRISE_config.R"))
+
+# ANSI color codes for highlighting failures in the terminal. Always emitted
+# (run_all.sh pipes stdout through tee; modern terminals render the codes,
+# while log viewers like `less -R` handle them transparently).
+.red   <- "\033[1;31m"
+.reset <- "\033[0m"
 
 # =============================================================================
 # SECTION 1: SETUP
@@ -57,7 +64,7 @@ cat("║  Start:  ", formatC(format(run_start, "%Y-%m-%d %H:%M:%S"),
 cat("╚══════════════════════════════════════════════════════════════╝\n\n")
 
 scripts <- c(
-  "ABTRISE_00_setup_c.R",
+  "ABTRISE_01_setup_c.R",
   "ABTRISE_02_criterion_c.R",
   "ABTRISE_345_outcomes_c.R",
   "ABTRISE_06_benchmarking_c.R"
@@ -66,7 +73,40 @@ scripts <- c(
 results <- list()
 
 # =============================================================================
-# SECTION 2: RUN SCRIPTS IN ORDER
+# SECTION 2: PRE-FLIGHT CHECK -- ALL SCRIPTS MUST BE PRESENT
+# =============================================================================
+# Check that all four analysis scripts exist before running anything.
+# If any are missing, stop immediately with a clear message listing what
+# is missing and where to get it. Do not proceed with partial outputs.
+
+cat("Pre-flight check: verifying all required scripts are present...\n")
+
+missing_scripts <- scripts[!file.exists(here::here("code", scripts))]
+
+if (length(missing_scripts) > 0) {
+  cat("\n")
+  cat("╔══════════════════════════════════════════════════════════════╗\n")
+  cat("║                 MISSING REQUIRED SCRIPTS                     ║\n")
+  cat("╚══════════════════════════════════════════════════════════════╝\n\n")
+  cat("The following scripts are missing from your project folder:\n\n")
+  for (s in missing_scripts) {
+    cat("  ✗  ", s, "\n")
+  }
+  cat("\nAll five files must be in the code/ folder before running:\n")
+  cat("  - code/ABTRISE_run_all.R          (this file)\n")
+  cat("  - code/ABTRISE_01_setup_c.R\n")
+  cat("  - code/ABTRISE_02_criterion_c.R\n")
+  cat("  - code/ABTRISE_345_outcomes_c.R\n")
+  cat("  - code/ABTRISE_06_benchmarking_c.R\n")
+  cat("\nDownload all files from the project repository and save them\n")
+  cat("in the code/ folder before running ABTRISE_run_all.R.\n\n")
+  stop("Run aborted: missing required scripts. See message above.", call. = FALSE)
+}
+
+cat("  All required scripts found.\n\n")
+
+# =============================================================================
+# SECTION 3: RUN SCRIPTS IN ORDER
 # =============================================================================
 
 for (script in scripts) {
@@ -78,49 +118,34 @@ for (script in scripts) {
   cat("   Started:", format(Sys.time(), "%H:%M:%S"), "\n")
   cat("────────────────────────────────────────────────────────────\n\n")
 
-  if (!file.exists(script_path)) {
-    msg <- paste0("File not found: ", script_path)
-    cat("✗  SKIPPED: ", msg, "\n\n")
-    results[[script]] <- list(status = "skipped", message = msg,
-                              duration_min = NA)
-    next
-  }
-
   t_start <- proc.time()
 
-  # withCallingHandlers catches warnings WITHOUT unwinding the call stack,
-  # so inner withCallingHandlers + invokeRestart("muffleWarning") calls in
-  # the analysis scripts remain valid. tryCatch alone would unwind the stack
-  # and invalidate those restarts, causing the "no restart muffleWarning found"
-  # error. The outer tryCatch here catches only hard errors.
+  # withCallingHandlers preserves the "muffleWarning" restart so warnings
+  # raised inside the sourced script don't interrupt execution; tryCatch
+  # catches hard errors and lets the next script continue.
   tryCatch(
     withCallingHandlers(
-      source(script_path, local = FALSE),
-      warning = function(w) {
-        # Warnings are already captured within each analysis script.
-        # Muffle here so they don't print twice at the run_all level.
-        invokeRestart("muffleWarning")
-      }
+      {
+        source(script_path, local = FALSE)
+        elapsed <- round((proc.time() - t_start)["elapsed"] / 60, 1)
+        cat("\n✓  COMPLETE:", script, "--", elapsed, "min\n\n")
+        results[[script]] <- list(status  = "success",
+                                  message = "Completed without error",
+                                  duration_min = elapsed)
+      },
+      warning = function(w) invokeRestart("muffleWarning")
     ),
     error = function(e) {
       elapsed <- round((proc.time() - t_start)["elapsed"] / 60, 1)
-      cat("\n\u2717  ERROR in", script, "after", elapsed, "min:\n")
-      cat("   ", conditionMessage(e), "\n\n")
+      cat("\n", .red, "✗  ERROR in ", script, " after ", elapsed, " min:",
+          .reset, "\n", sep = "")
+      cat("   ", .red, conditionMessage(e), .reset, "\n\n", sep = "")
       cat("   Continuing to next script...\n\n")
       results[[script]] <<- list(status  = "error",
                                  message = conditionMessage(e),
                                  duration_min = elapsed)
     }
   )
-
-  # Log success if not already logged as error
-  if (is.null(results[[script]])) {
-    elapsed <- round((proc.time() - t_start)["elapsed"] / 60, 1)
-    cat("\n\u2713  COMPLETE:", script, "--", elapsed, "min\n\n")
-    results[[script]] <- list(status       = "success",
-                              message      = "Completed without error",
-                              duration_min = elapsed)
-  }
 }
 
 # =============================================================================
@@ -140,12 +165,14 @@ for (script in scripts) {
   icon <- switch(res$status,
     success = "✓",
     error   = "✗",
-    skipped = "—",
+
     "?"
   )
   dur <- if (!is.na(res$duration_min)) paste0(res$duration_min, " min") else "n/a"
-  cat(sprintf("║  %s  %-38s  %7s  ║\n",
-              icon,
+  row_open  <- if (identical(res$status, "error")) .red   else ""
+  row_close <- if (identical(res$status, "error")) .reset else ""
+  cat(sprintf("║  %s%s%s  %-38s  %7s  ║\n",
+              row_open, icon, row_close,
               substr(script, 1, 38),
               dur))
 }
@@ -157,29 +184,20 @@ cat("║  Finished:      ", formatC(format(run_end, "%Y-%m-%d %H:%M:%S"),
                                    width = 44, flag = "-"), "║\n")
 cat("╚══════════════════════════════════════════════════════════════╝\n\n")
 
-# Flag any failures or skips
-errors  <- Filter(function(r) r$status == "error",   results)
-skipped <- Filter(function(r) r$status == "skipped", results)
-
+# Flag any failures (entire warning block printed in red)
+errors <- Filter(function(r) r$status == "error", results)
 if (length(errors) > 0) {
-  cat("⚠  WARNING:", length(errors), "script(s) failed:\n")
+  cat(.red, "⚠  WARNING: ", length(errors), " script(s) failed:", .reset,
+      "\n", sep = "")
   for (nm in names(errors)) {
-    cat("   -", nm, ":", errors[[nm]]$message, "\n")
+    cat("   ", .red, "- ", nm, ": ", errors[[nm]]$message, .reset, "\n",
+        sep = "")
   }
-}
-if (length(skipped) > 0) {
-  cat("⚠  WARNING:", length(skipped), "script(s) skipped:\n")
-  for (nm in names(skipped)) {
-    cat("   -", nm, ":", skipped[[nm]]$message, "\n")
-  }
-}
-
-if (length(errors) == 0 && length(skipped) == 0) {
-  cat("All scripts completed successfully.\n")
-  cat("Outputs are in: ", out_dir, "\n\n", sep = "")
+  cat("\n   ", .red, "Check ", out_dir,
+      " to confirm which files were produced.", .reset, "\n", sep = "")
+  cat("   ", .red, "Contact the coordinating center if errors persist.",
+      .reset, "\n\n", sep = "")
 } else {
-  cat("\n   Check ", out_dir, " to confirm which files were produced.\n", sep = "")
-  cat("   Contact the coordinating center if errors persist.\n\n")
-  # Non-zero exit so the shell wrapper (run_all.sh / run_all.ps1) flags it.
-  quit(status = 1, save = "no")
+  cat("All scripts completed successfully.\n")
+  cat("Outputs are in:", out_dir, "\n\n")
 }

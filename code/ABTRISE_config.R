@@ -4,9 +4,9 @@
 # Reads clif_config.json at repo root and exposes:
 #   site_id   -- from config "site_name"
 #   data_dir  -- from "abtrise_input_dir"  (default: ./output_phi/analysis)
-#   out_dir   -- from "abtrise_output_dir" (default: ./outputs)
+#   out_dir   -- from "abtrise_output_dir" (default: ./output_to_share)
 #
-# Sourced by ABTRISE_run_all.R and ABTRISE_00_setup_c.R.
+# Sourced by ABTRISE_run_all.R and ABTRISE_01_setup_c.R.
 # Sites: edit clif_config.json at repo root. No edits needed in R code.
 # =============================================================================
 
@@ -41,7 +41,7 @@ site_id  <- .abtrise_cfg$site_name
 data_dir <- .abtrise_resolve_path(.abtrise_cfg$abtrise_input_dir,
                                   "./output_phi/analysis")
 out_dir  <- .abtrise_resolve_path(.abtrise_cfg$abtrise_output_dir,
-                                  "./outputs")
+                                  "./output_to_share")
 
 if (!dir.exists(data_dir)) {
   stop("abtrise_input_dir does not exist: ", data_dir)

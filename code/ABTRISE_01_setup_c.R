@@ -3,10 +3,10 @@
 # SETUP -- Configuration, Data Load, Preparation, Shared Diagnostics
 #
 # SCRIPTS IN THIS SERIES:
-#   ABTRISE_00_setup.R          <- YOU ARE HERE
-#   ABTRISE_02_criterion.R      source("ABTRISE_00_setup.R") automatically
-#   ABTRISE_345_outcomes.R      source("ABTRISE_00_setup.R") automatically
-#   ABTRISE_06_benchmarking.R   source("ABTRISE_00_setup.R") automatically
+#   ABTRISE_01_setup.R          <- YOU ARE HERE
+#   ABTRISE_02_criterion.R      source("ABTRISE_01_setup.R") automatically
+#   ABTRISE_345_outcomes.R      source("ABTRISE_01_setup.R") automatically
+#   ABTRISE_06_benchmarking.R   source("ABTRISE_01_setup.R") automatically
 #
 # HOW TO RUN:
 #   - Run this script once directly to check data quality and review
@@ -33,12 +33,14 @@
 # =============================================================================
 # SECTION 0: SITE CONFIGURATION
 # =============================================================================
-# Sites edit clif_config.json at repo root. Helper loads site_id, data_dir,
-# out_dir from that config. Re-source guarded so run_all and standalone runs
-# both work without double-printing.
+# *** SITES: ONLY EDIT THIS SECTION ***
+# Everything below Section 0 runs automatically.
 
-suppressPackageStartupMessages(library(here))
+# Site config (site_id, data_dir, out_dir) comes from clif_config.json via
+# ABTRISE_config.R. run_all.R sources it; if this script is sourced directly
+# from RStudio, load the config here as a fallback.
 if (!exists("site_id") || !exists("data_dir") || !exists("out_dir")) {
+  suppressPackageStartupMessages(library(here))
   source(here::here("code", "ABTRISE_config.R"))
 }
 
@@ -48,7 +50,6 @@ if (!exists("site_id") || !exists("data_dir") || !exists("out_dir")) {
 
 suppressPackageStartupMessages({
   library(here)
-  library(jsonlite)
   library(arrow)        # read_parquet
   library(dplyr)
   library(tidyr)
@@ -74,7 +75,7 @@ cat("Site:", site_id, "\n")
 cat("Setup started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n")
 
 # --- 1.1 Output folder structure ---------------------------------------------
-# out_dir comes from ABTRISE_config.R (configured via clif_config.json).
+# out_dir is provided by ABTRISE_config.R (default: ./output_to_share).
 
 subdirs <- c(
   "diagnostics",
@@ -209,7 +210,7 @@ cat("-- Section 2: Data preparation\n\n")
 # --- 2.1 Population consistency check ----------------------------------------
 # Identify hospitalizations in File 2 with zero algorithm vent days
 # (not present in File 1). These are fast-extubation survivors with
-# median VFD=28 -- excluded from both files per team decision Q6.
+
 
 cat("-- 2.1 Population consistency check\n")
 
@@ -222,7 +223,7 @@ ids_zero_vent <- ids_hosp[!ids_hosp %in% ids_pp]
 
 cat("Hospitalizations in File 1 not in File 2:", n_pp_not_hosp, "\n")
 cat("Hospitalizations in File 2 not in File 1:", n_hosp_not_pp,
-    "(zero algorithm vent days -- excluded per Q6)\n")
+    "(zero algorithm vent days -- excluded)\n")
 
 if (n_pp_not_hosp > 0) {
   warning("UNEXPECTED: ", n_pp_not_hosp,
@@ -281,7 +282,7 @@ waterfall <- log_step(waterfall, "2_zero_vent_exclusion",
                       "File2", nrow(df_hosp_raw), as.integer(n_hosp_not_pp),
                       "Excluded hospitalizations with zero algorithm vent days (fast-extubation survivors, median VFD=28)")
 
-# --- 2.4 Impossible values check and exclusion --------------------------------
+# --- 2.3 Impossible values check and exclusion --------------------------------
 # Flags and removes rows where key variables contain TRUE data coding errors --
 # values that are biologically or definitionally impossible regardless of cohort.
 #
@@ -395,7 +396,7 @@ waterfall <- log_step(waterfall, "3_data_coding_error_exclusion",
 
 export_csv(impossible_all, "diagnostics", "impossible_values.csv")
 
-# --- 2.5 Person-period file prep (File 1) ------------------------------------
+# --- 2.4 Person-period file prep (File 1) ------------------------------------
 
 cat("-- 2.4 Person-period file preparation\n")
 
@@ -436,7 +437,7 @@ cat("File 1 after vent_day 1-28 filter:", nrow(df_pp), "rows,",
 cat("Extubation events:", sum(df_pp$extubated,   na.rm = TRUE), "\n")
 cat("Death events:     ", sum(df_pp$died_today,  na.rm = TRUE), "\n\n")
 
-# --- 2.6 Hospitalization-level file prep (File 2) ----------------------------
+# --- 2.5 Hospitalization-level file prep (File 2) ----------------------------
 
 cat("-- 2.5 Hospitalization-level file preparation\n")
 
@@ -629,7 +630,7 @@ flag_miss <- miss_all %>%
                           "sedation_prior","NEE_prior"))
 
 if (nrow(flag_miss) > 0) {
-  cat("\nWARNING: Variables > 10% missing (MI sensitivity 7k may be warranted):\n")
+  cat("\nWARNING: Variables > 10% missing:\n")
   print(as.data.frame(flag_miss))
 } else {
   cat("\nAll key covariates < 10% missing. Complete case analysis proceeds.\n")

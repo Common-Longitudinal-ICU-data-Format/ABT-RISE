@@ -3,14 +3,14 @@
 # ANALYSIS 6 -- Hospital Benchmarking (Risk-Adjusted Delivery Rates)
 #
 # SCRIPTS IN THIS SERIES:
-#   ABTRISE_00_setup.R          -- run directly to review data quality
+#   ABTRISE_01_setup.R          -- run directly to review data quality
 #   ABTRISE_02_criterion.R
 #   ABTRISE_345_outcomes.R
 #   ABTRISE_06_benchmarking.R   <- YOU ARE HERE
 #
 # HOW TO RUN:
 #   Open this file and click Source (or run source("ABTRISE_06_benchmarking.R"))
-#   Setup runs automatically -- do NOT run ABTRISE_00_setup.R separately first.
+#   Setup runs automatically -- do NOT run ABTRISE_01_setup.R separately first.
 #
 # WHAT THIS SCRIPT PRODUCES:
 #   outputs/models/a6/    A6_SAT_glmm_coefs.csv, A6_SBT_glmm_coefs.csv,
@@ -41,7 +41,7 @@
 # =============================================================================
 
 # --- Load setup (runs Sections 0-2 automatically) ----------------------------
-source(here::here("code", "ABTRISE_00_setup_c.R"))
+source(here::here("code", "ABTRISE_01_setup_c.R"))
 
 # SECTION 2-B: ANALYSIS 6 -- HOSPITAL BENCHMARKING
 # =============================================================================
@@ -76,7 +76,7 @@ cat("-- 6.0 Building Analysis 6 datasets\n\n")
 # plus baseline covariates. Age/sex/CCI joined from File 2 in Section 2.4.
 # hospital_type and location_type already factored in df_pp.
 
-# Covariate set for A6: defined in ABTRISE_00_setup.R Section 2.9
+# Covariate set for A6: defined in ABTRISE_01_setup.R Section 2.9
 # and available via source(). Reproduced here for reference only:
 #   covariates_a6 <- c("age", "sex", "CCI",
 #                      "SOFA_prior", "FiO2_prior", "PEEP_prior",
@@ -587,7 +587,7 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
         "CIs reflect conditional variance of random effects (postVar).\n",
         "Hospital labels de-identified -- H1 = lowest, H",
         nrow(blup_plot), " = highest rate.\n",
-        "Preliminary single-site results -- interpret after pooling."
+       
       )
     ) +
     theme_abtrise()
@@ -639,7 +639,7 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
         "Small hospitals naturally show wider scatter -- compare with\n",
         "caterpillar plot (BLUP-shrunk estimates) for full picture.\n",
         "Spiegelhalter (Stat Med 2005).\n",
-        "Preliminary single-site results -- interpret after pooling."
+       
       )
     ) +
     theme_abtrise()
