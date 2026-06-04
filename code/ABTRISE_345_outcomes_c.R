@@ -457,8 +457,7 @@ fig_A3_forest <- ggplot(forest_data_A3,
       "Primary model: discrete-time logistic regression ",
       "(ns(vent_day, df=3); exact tied-event likelihood).\n",
       "Fine-Gray uses episode-level SAT/SBT proportion; ",
-      "Cox and discrete-time use daily binary exposure.\n",
-  
+      "Cox and discrete-time use daily binary exposure."
     )
   ) +
   theme_abtrise() +
@@ -841,8 +840,7 @@ fig_A4 <- ggplot(a4_plot_data,
     caption  = paste0(
       "Two-part model replaces ZINB (Hajage NEJM Evidence 2025).\n",
       "SBT null in Part 2 reflects survivor bias -- not a model failure ",
-      "(see Analysis 5 mortality results).\n",
-     
+      "(see Analysis 5 mortality results)."
     )
   ) +
   theme_abtrise() +
@@ -1248,7 +1246,7 @@ fig_A5 <- ggplot(a5_plot_data,
       "strengthened (1.29), ruling out population composition.\n",
       "Overdispersion stat: ", round(dispersion_stat, 2),
       " (", dispersion_flag, "). ",
-      "Model-based SEs only; no sandwich SEs (Cameron & Miller 2015).\n",
+      "Model-based SEs only; no sandwich SEs (Cameron & Miller 2015)."
     )
   ) +
   theme_abtrise() +

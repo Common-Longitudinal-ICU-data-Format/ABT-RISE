@@ -586,8 +586,7 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
         "(Rogers et al. 2013).\n",
         "CIs reflect conditional variance of random effects (postVar).\n",
         "Hospital labels de-identified -- H1 = lowest, H",
-        nrow(blup_plot), " = highest rate.\n",
-       
+        nrow(blup_plot), " = highest rate."
       )
     ) +
     theme_abtrise()
@@ -638,8 +637,7 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
         "Points outside control limits are statistical outliers.\n",
         "Small hospitals naturally show wider scatter -- compare with\n",
         "caterpillar plot (BLUP-shrunk estimates) for full picture.\n",
-        "Spiegelhalter (Stat Med 2005).\n",
-       
+        "Spiegelhalter (Stat Med 2005)."
       )
     ) +
     theme_abtrise()
