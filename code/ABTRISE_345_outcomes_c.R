@@ -59,7 +59,7 @@
 # =============================================================================
 
 # --- Load setup (runs Sections 0-2 automatically) ----------------------------
-source(here::here("code", "ABTRISE_01_setup_c.R"))
+source(here::here("ABTRISE_01_setup_c.R"))
 
 
 cat("============================================================\n")
@@ -96,8 +96,9 @@ df_dt <- df_pp %>%
   filter(
     !is.na(SAT_delivered_primary), !is.na(SBT_delivered_2min),
     !is.na(SOFA_prior), !is.na(FiO2_prior), !is.na(PEEP_prior),
-    !is.na(sedation_prior),
-    !is.na(hospital_type), !is.na(location_type)   # Q4
+    !is.na(sedation_prior)
+    # hospital_type/location_type no longer covariates here (Thread 4
+    # amendment) -- complete-case filter on them removed accordingly
   )
 
 # Log complete case step to waterfall
@@ -114,8 +115,9 @@ cat("Extubation events:        ",
 
 # --- 3.2 PRIMARY: Discrete-time logistic regression --------------------------
 # glmer: extubated ~ SAT + SBT + ns(vent_day,3) + time-varying covariates
-#                  + baseline covariates + hospital_type + location_type
-#                  + (1|hospital_id)
+#                  + baseline covariates (age, sex, CCI; hospital_type/
+#                    location_type removed -- collinear with (1|hospital_id),
+#                    Thread 4 amendment) + (1|hospital_id)
 # ns(vent_day, df=3) approximates flexible baseline hazard -- confirmed Q3
 
 # Death treated as censoring (row truncation above)
@@ -221,8 +223,7 @@ cat("Random effect variance (hospital):",
 # Counting process: (tstart, tstop, event_cs) per eligible vent-day
 # Death censored (cause-specific for extubation)
 # Shared gamma frailty for hospital clustering
-# hospital_type and location_type as covariates (Q4)
-# NEE_prior included as binary time-varying covariate
+
 
 cat("-- 3.3 Secondary: Cause-specific Cox (counting process)\n")
 
@@ -285,7 +286,8 @@ cat("\n")
 # Exposure: SAT_prop_final_primary, SBT_prop_final_2min (episode-level summary)
 # Cannot take true time-varying covariates -- episode means used
 # cluster() term dropped for single-hospital sites
-# hospital_type and location_type as covariates (Q4)
+# hospital_type/location_type removed as covariates -- collinear with
+# cluster(hospital_id) term (Thread 4 amendment)
 # NEE_mean excluded -- redundant with SOFA_mean
 
 cat("-- 3.4 Secondary: Fine-Gray subdistribution hazard\n")
@@ -293,7 +295,6 @@ df_fg <- df_hosp %>%
   filter(
     !is.na(SAT_prop_final_primary), !is.na(SBT_prop_final_2min),
     !is.na(age), !is.na(sex), !is.na(CCI),
-    !is.na(hospital_type), !is.na(location_type),
     !is.na(SOFA_mean), !is.na(FiO2_mean), !is.na(PEEP_mean),
     !is.na(sedation_mean)
     # NOTE: do NOT filter on !is.na(time_to_extubation) --
@@ -320,14 +321,14 @@ cat("NOTE: censored + extubated + died should sum to n patients.",
 
 # Apply single-level factor check to Fine-Gray covariates
 covars_episode_fg <- drop_single_level(
-  c("age", "sex", "CCI", "hospital_type", "location_type",
+  c("age", "sex", "CCI",
     "SOFA_mean", "FiO2_mean", "PEEP_mean", "sedation_mean"),
   df_fg
 )
 
-if (length(covars_episode_fg) < 9) {
+if (length(covars_episode_fg) < 7) {
   dropped_fg <- setdiff(
-    c("age","sex","CCI","hospital_type","location_type",
+    c("age","sex","CCI",
       "SOFA_mean","FiO2_mean","PEEP_mean","sedation_mean"),
     covars_episode_fg
   )
@@ -374,13 +375,6 @@ tidy_fg %>%
 cat("\n")
 
 # Cumulative incidence curve data
-# tidycmprsk::crr() does not store $cuminc -- use tidycmprsk::tidy() to extract
-# the cumulative incidence function at each observed event time.
-# The resulting data frame has columns: time, outcome, estimate, std.error,
-# conf.low, conf.high -- one row per time point per competing event type.
-# This is used for the CIF figure at the CC (delivered/not-delivered groups
-# cannot be reconstructed here since crr() uses episode-level proportions,
-# not a binary group variable; CC constructs group-stratified CIF separately).
 
 cif_data <- tryCatch({
   # Extract predicted cumulative incidence at observed times
@@ -457,7 +451,7 @@ fig_A3_forest <- ggplot(forest_data_A3,
       "Primary model: discrete-time logistic regression ",
       "(ns(vent_day, df=3); exact tied-event likelihood).\n",
       "Fine-Gray uses episode-level SAT/SBT proportion; ",
-      "Cox and discrete-time use daily binary exposure."
+      "Cox and discrete-time use daily binary exposure.\n"
     )
   ) +
   theme_abtrise() +
@@ -598,12 +592,9 @@ cat("============================================================\n\n")
 # Two-part separates them:
 #   Part 1: Is SAT/SBT associated with being alive at 28 days?
 #   Part 2: Among survivors, is SAT/SBT associated with more VFDs?
-# This allows clinical readers to see whether the benefit is from reduced
-# mortality, faster liberation, or both.
-#
 # Exposure: SAT_prop_final_primary, SBT_prop_final_2min (episode-level summary)
-# Covariates: age, sex, CCI, hospital_type, location_type (Q4),
-#             SOFA_mean, FiO2_mean, PEEP_mean, sedation_mean
+# Covariates: age, sex, CCI, SOFA_mean, FiO2_mean, PEEP_mean, sedation_mean
+#        
 #             NEE_mean excluded -- redundant with SOFA_mean cardiovascular component
 
 # --- 4.0 Build Analysis 4 base dataset ----------------------------------------
@@ -612,7 +603,6 @@ df_a4 <- df_hosp %>%
   filter(
     !is.na(SAT_prop_final_primary), !is.na(SBT_prop_final_2min),
     !is.na(age), !is.na(sex), !is.na(CCI),
-    !is.na(hospital_type), !is.na(location_type),    # Q4
     !is.na(SOFA_mean), !is.na(FiO2_mean), !is.na(PEEP_mean),
     !is.na(sedation_mean),                            # NEE_mean excluded -- redundant with SOFA_mean
     !is.na(alive_28d), !is.na(VFD_28)
@@ -636,7 +626,7 @@ cat("Median VFD_28 [IQR]:          ",
     quantile(df_a4$VFD_28, 0.75), "]\n\n")
 
 # Shared covariate vector for Analysis 4 and 5
-# hospital_type and location_type included (Q4); NEE_mean removed (Q7)
+# hospital_type and location_type removed (Thread 4 amendment); NEE_mean removed (Q7)
 covars_episode <- covariates_mean   # defined in Section 2.9
 
 # --- 4.1 Part 1: Mixed-effects logistic -- alive at 28 days -------------------
@@ -840,7 +830,7 @@ fig_A4 <- ggplot(a4_plot_data,
     caption  = paste0(
       "Two-part model replaces ZINB (Hajage NEJM Evidence 2025).\n",
       "SBT null in Part 2 reflects survivor bias -- not a model failure ",
-      "(see Analysis 5 mortality results)."
+      "(see Analysis 5 mortality results).\n"
     )
   ) +
   theme_abtrise() +
@@ -926,7 +916,6 @@ df_a4_sens <- df_hosp %>%
   filter(
     !is.na(SAT_prop_final_modified), !is.na(SBT_prop_final_5min),
     !is.na(age), !is.na(sex), !is.na(CCI),
-    !is.na(hospital_type), !is.na(location_type),
     !is.na(SOFA_mean), !is.na(FiO2_mean), !is.na(PEEP_mean),
     !is.na(sedation_mean), !is.na(alive_28d), !is.na(VFD_28)
   )
@@ -997,23 +986,15 @@ cat("============================================================\n")
 cat("ANALYSIS 5: ICU LOS and In-Hospital Mortality\n")
 cat("============================================================\n\n")
 
-# NOTE -- SBT LOS PARADOX (Q8 team decision -- acknowledge as survivor bias):
+
 # SBT is strongly protective for mortality (Analysis 5.2) but paradoxically
 # associated with LONGER ICU LOS (IRR > 1). This is a structural finding,
 # not a model error. SBT recipients survive longer → longer ICU stays by
-# definition. Confirmed via noNEE sensitivity run (n=8,726): IRR strengthened
-# to 1.29, ruling out population composition as the driver. Survivor bias
-# explanation retained; annotated in fig_A5_los_mortality.png caption.
-# No model change per Q8 team decision.
+# definition. Confirmed via noNEE sensitivity run (n=8,726)
 #
-# NOTE -- OVERDISPERSION (structural):
-# ICU LOS in mechanically ventilated patients reflects a mixture of clinical
-# trajectories (fast-extubation vs. prolonged ventilation). Residual
-# overdispersion after ZTNB is structurally motivated. Overdispersion stat
-# flagged at threshold > 1.5 (not > 2). Pilot stat: 1.65.
-#
-# Covariates: age, sex, CCI, hospital_type, location_type (Q4),
-#             SOFA_mean, FiO2_mean, PEEP_mean, sedation_mean
+# Covariates: age, sex, CCI, SOFA_mean, FiO2_mean, PEEP_mean, sedation_mean
+#             hospital_type/location_type removed -- collinear with
+#             (1|hospital_id)
 #             NEE_mean excluded -- redundant with SOFA_mean cardiovascular component
 
 # --- 5.0 Build Analysis 5 base dataset ----------------------------------------
@@ -1022,7 +1003,6 @@ df_a5 <- df_hosp %>%
   filter(
     !is.na(SAT_prop_final_primary), !is.na(SBT_prop_final_2min),
     !is.na(age), !is.na(sex), !is.na(CCI),
-    !is.na(hospital_type), !is.na(location_type),    # Q4
     !is.na(SOFA_mean), !is.na(FiO2_mean), !is.na(PEEP_mean),
     !is.na(sedation_mean),                            # NEE_mean excluded -- see note above
     !is.na(ICU_LOS), !is.na(death_flag),
@@ -1045,7 +1025,7 @@ cat("Median ICU LOS [IQR]:     ",
 # --- 5.1 ICU LOS: Zero-truncated negative binomial ---------------------------
 # ZTNB conditions on LOS >= 1 (correct -- zero LOS impossible in this cohort)
 # Standard NB assigns probability mass to LOS = 0 -- incorrect for this data
-# hospital_type and location_type as covariates (Q4)
+# hospital_type/location_type removed as covariates (Thread 4 amendment)
 # NEE_mean removed (Q7)
 
 cat("-- 5.1 ICU LOS: Zero-truncated negative binomial\n")
@@ -1138,7 +1118,7 @@ cat("  Acknowledged as survivor bias per Q8 team decision. No model change.\n\n"
 # --- 5.2 Mortality: Mixed-effects logistic regression ------------------------
 # Model-based SEs only -- no robust/sandwich SEs on top of random intercepts
 # Double-counting per Cameron & Miller 2015 (see SAP Section 6)
-# hospital_type and location_type as covariates (Q4)
+# hospital_type/location_type removed as covariates (Thread 4 amendment)
 # NEE_mean removed (Q7)
 
 cat("-- 5.2 Mortality: Mixed-effects logistic regression\n")
@@ -1246,7 +1226,7 @@ fig_A5 <- ggplot(a5_plot_data,
       "strengthened (1.29), ruling out population composition.\n",
       "Overdispersion stat: ", round(dispersion_stat, 2),
       " (", dispersion_flag, "). ",
-      "Model-based SEs only; no sandwich SEs (Cameron & Miller 2015)."
+      "Model-based SEs only; no sandwich SEs (Cameron & Miller 2015).\n"
     )
   ) +
   theme_abtrise() +
@@ -1394,9 +1374,6 @@ export_rds(fit_a5_mort, "models/a5", "A5_fit_mortality_logistic.rds")
 # SECTION 6: SENSITIVITY ANALYSIS -- AGE < 65 SUBGROUP
 # =============================================================================
 # Repeats primary models from A3, A4, A5 restricted to patients aged < 65.
-# Rationale: assess whether SAT/SBT construct validity estimates are consistent
-# in younger patients, who may differ in sedation burden, illness severity,
-# and extubation trajectory from older ICU patients.
 #
 # Methodological note: age remains in all models even after restriction --
 # it continues to vary within the under-65 subgroup and serves as a continuous
@@ -1454,8 +1431,7 @@ df_dt_u65 <- df_pp_u65 %>%
   filter(
     !is.na(SAT_delivered_primary), !is.na(SBT_delivered_2min),
     !is.na(SOFA_prior), !is.na(FiO2_prior), !is.na(PEEP_prior),
-    !is.na(sedation_prior),
-    !is.na(hospital_type), !is.na(location_type)
+    !is.na(sedation_prior)
   )
 
 cat("Age < 65 discrete-time dataset:", nrow(df_dt_u65), "person-day rows,",
@@ -1466,7 +1442,6 @@ df_a4_u65 <- df_hosp_u65 %>%
   filter(
     !is.na(SAT_prop_final_primary), !is.na(SBT_prop_final_2min),
     !is.na(age), !is.na(sex), !is.na(CCI),
-    !is.na(hospital_type), !is.na(location_type),
     !is.na(SOFA_mean), !is.na(FiO2_mean), !is.na(PEEP_mean),
     !is.na(sedation_mean), !is.na(alive_28d), !is.na(VFD_28)
   )
@@ -1477,7 +1452,6 @@ df_a5_u65 <- df_hosp_u65 %>%
   filter(
     !is.na(SAT_prop_final_primary), !is.na(SBT_prop_final_2min),
     !is.na(age), !is.na(sex), !is.na(CCI),
-    !is.na(hospital_type), !is.na(location_type),
     !is.na(SOFA_mean), !is.na(FiO2_mean), !is.na(PEEP_mean),
     !is.na(sedation_mean), !is.na(ICU_LOS), !is.na(death_flag),
     ICU_LOS >= 1
@@ -1539,6 +1513,161 @@ tidy_sa_dt_u65 %>%
   select(term, estimate, conf.low, conf.high, p.value) %>%
   print()
 cat("\n")
+
+# --- SA A3 Cox: Cause-specific Cox (age < 65) --------------------------------
+# Mirrors Section 3.3 -- same model specification, restricted to age < 65
+
+cat("-- SA_age65 A3 Cox: Cause-specific Cox (counting process)\n")
+
+df_cox_u65 <- df_dt_u65 %>%
+  mutate(
+    tstart   = vent_day - 1,
+    tstop    = vent_day,
+    event_cs = as.integer(extubated == 1 & died_today == 0)
+  )
+
+covariates_tv_cox_u65       <- drop_single_level(covariates_tv,       df_cox_u65)
+covariates_baseline_cox_u65 <- drop_single_level(covariates_baseline, df_cox_u65)
+
+if (length(covariates_baseline_cox_u65) < length(covariates_baseline)) {
+  dropped_cox_u65 <- setdiff(covariates_baseline, covariates_baseline_cox_u65)
+  cat("NOTE: Dropping single-level covariates from SA A3 Cox model:",
+      paste(dropped_cox_u65, collapse = ", "), "\n")
+}
+
+f_cox_u65 <- reformulate(
+  termlabels = c(
+    "SAT_delivered_primary",
+    "SBT_delivered_2min",
+    covariates_tv_cox_u65,
+    covariates_baseline_cox_u65,
+    if (!single_hospital) "frailty(hospital_id, distribution = 'gamma')"
+  ),
+  response = "Surv(tstart, tstop, event_cs)"
+)
+
+cat("Formula:\n"); print(f_cox_u65); cat("\n")
+
+fit_cox_u65_warnings <- character(0)
+
+fit_cox_u65 <- withCallingHandlers(
+  coxph(f_cox_u65, data = df_cox_u65, ties = "efron"),
+  warning = function(w) {
+    fit_cox_u65_warnings <<- c(fit_cox_u65_warnings, conditionMessage(w))
+    invokeRestart("muffleWarning")
+  }
+)
+
+if (length(fit_cox_u65_warnings) > 0) {
+  cat("WARNINGS (logged, model retained):\n")
+  cat(paste("  -", fit_cox_u65_warnings, collapse = "\n"), "\n")
+}
+
+tidy_cox_u65 <- broom::tidy(fit_cox_u65, conf.int = TRUE, exponentiate = TRUE)
+
+cat("\nSA A3 Cox (age < 65) -- primary exposure terms:\n")
+tidy_cox_u65 %>%
+  filter(str_detect(term, "SAT_delivered|SBT_delivered")) %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  print()
+cat("\n")
+
+# --- SA A3 Fine-Gray: subdistribution hazard (age < 65) ----------------------
+# Mirrors Section 3.4 -- same model specification, restricted to age < 65
+
+cat("-- SA_age65 A3 Fine-Gray: subdistribution hazard\n")
+
+df_fg_u65 <- df_hosp_u65 %>%
+  filter(
+    !is.na(SAT_prop_final_primary), !is.na(SBT_prop_final_2min),
+    !is.na(age), !is.na(sex), !is.na(CCI),
+    !is.na(SOFA_mean), !is.na(FiO2_mean), !is.na(PEEP_mean),
+    !is.na(sedation_mean)
+    # NOTE: do NOT filter on !is.na(time_to_extubation) -- deaths and
+    # censored patients have NA here and must be retained (see Section 3.4)
+  ) %>%
+  mutate(
+    time_fg = case_when(
+      extubation_flag == 1 ~ pmin(time_to_extubation, 28),
+      death_flag == 1      ~ pmin(days_to_death, 28),
+      TRUE                 ~ pmin(n_vent_days, 28)
+    )
+    # event_fg already constructed in Section 2.5 -- do not rebuild
+  )
+
+cat("SA A3 Fine-Gray (age < 65) dataset:", nrow(df_fg_u65), "patients\n")
+cat("Event distribution:\n")
+print(table(df_fg_u65$event_fg, useNA = "always"))
+cat("\n")
+
+covars_episode_fg_u65 <- drop_single_level(
+  c("age", "sex", "CCI",
+    "SOFA_mean", "FiO2_mean", "PEEP_mean", "sedation_mean"),
+  df_fg_u65
+)
+
+if (length(covars_episode_fg_u65) < 7) {
+  dropped_fg_u65 <- setdiff(
+    c("age","sex","CCI","SOFA_mean","FiO2_mean","PEEP_mean","sedation_mean"),
+    covars_episode_fg_u65
+  )
+  cat("NOTE: Dropping single-level covariates from SA A3 Fine-Gray model:",
+      paste(dropped_fg_u65, collapse = ", "), "\n")
+}
+
+fg_rhs_u65 <- c(
+  "SAT_prop_final_primary",
+  "SBT_prop_final_2min",
+  covars_episode_fg_u65,
+  if (!single_hospital) "cluster(hospital_id)"
+)
+
+fg_formula_u65 <- as.formula(
+  paste("Surv(time_fg, event_fg) ~", paste(fg_rhs_u65, collapse = " + "))
+)
+
+cat("Formula:\n"); print(fg_formula_u65); cat("\n")
+
+fit_fg_u65_warnings <- character(0)
+
+fit_fg_u65 <- withCallingHandlers(
+  crr(fg_formula_u65, data = df_fg_u65, failcode = "extubated"),
+  warning = function(w) {
+    fit_fg_u65_warnings <<- c(fit_fg_u65_warnings, conditionMessage(w))
+    invokeRestart("muffleWarning")
+  }
+)
+
+if (length(fit_fg_u65_warnings) > 0) {
+  cat("WARNINGS (logged, model retained):\n")
+  cat(paste("  -", fit_fg_u65_warnings, collapse = "\n"), "\n")
+}
+
+tidy_fg_u65 <- broom::tidy(fit_fg_u65, conf.int = TRUE, exponentiate = TRUE)
+
+cat("SA A3 Fine-Gray (age < 65) -- primary exposure terms:\n")
+tidy_fg_u65 %>%
+  filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  print()
+cat("\n")
+
+# Cumulative incidence curve data (age < 65) -- mirrors Section 3.4
+cif_data_u65 <- tryCatch({
+  tidy_cif_u65 <- tidycmprsk::tidy(fit_fg_u65)
+  as.data.frame(tidy_cif_u65)
+}, error = function(e) {
+  cat("NOTE: SA_age65 CIF extraction via tidy() failed:",
+      conditionMessage(e), "\n")
+  if (!is.null(fit_fg_u65$cmprsk)) {
+    as.data.frame(fit_fg_u65$cmprsk$uftime)
+  } else {
+    tibble::tibble(note = "CIF extraction failed; rerun with tidycmprsk >= 1.1.0")
+  }
+})
+
+cat("SA_age65 cumulative incidence curve data extracted:",
+    nrow(cif_data_u65), "rows.\n\n")
 
 # --- SA A4 Part 1: Alive at 28d (age < 65) -----------------------------------
 
@@ -1690,6 +1819,185 @@ tidy_sa_a5mort_u65 %>%
   print()
 cat("\n")
 
+# --- SA_age65 figures ----------------------------------------------------------
+
+cat("-- SA_age65: Building figures\n")
+
+# -- SA A3 figure: three-model comparison, mirrors primary fig_A3_forest -----
+# Discrete-time, Cox, and Fine-Gray for SAT/SBT primary exposure terms --
+# same structure as the main-analysis Section 3.5 figure, age < 65 subgroup
+
+sa_a3_plot_data <- bind_rows(
+  tidy_sa_dt_u65 %>%
+    filter(str_detect(term, "SAT_delivered_primary|SBT_delivered_2min")) %>%
+    mutate(model = "Discrete-Time\n(Age <65)", model_order = 1),
+  tidy_cox_u65 %>%
+    filter(str_detect(term, "SAT_delivered_primary|SBT_delivered_2min")) %>%
+    mutate(model = "Cause-Specific\nCox", model_order = 2),
+  tidy_fg_u65 %>%
+    filter(str_detect(term, "SAT_prop_final_primary|SBT_prop_final_2min")) %>%
+    mutate(
+      model = "Fine-Gray\nSubdist.", model_order = 3,
+      # Relabel Fine-Gray terms to match discrete-time for plotting
+      term  = case_when(
+        str_detect(term, "SAT") ~ "SAT_delivered_primary",
+        str_detect(term, "SBT") ~ "SBT_delivered_2min",
+        TRUE ~ term
+      )
+    )
+) %>%
+  mutate(
+    trial       = if_else(str_detect(term, "SAT"), "SAT", "SBT"),
+    model       = factor(model, levels = c("Discrete-Time\n(Age <65)",
+                                           "Cause-Specific\nCox",
+                                           "Fine-Gray\nSubdist.")),
+    est_label   = paste0(round(estimate, 2),
+                         " (", round(conf.low, 2),
+                         "–",  round(conf.high, 2), ")")
+  )
+
+fig_SA_A3 <- ggplot(sa_a3_plot_data,
+                    aes(x = estimate, xmin = conf.low, xmax = conf.high,
+                        y = model, color = trial)) +
+  geom_vline(xintercept = 1, linetype = "dashed",
+             color = "gray50", linewidth = 0.6) +
+  geom_errorbarh(height = 0.2, linewidth = 0.8) +
+  geom_point(size = 3) +
+  geom_text(aes(label = est_label), hjust = -0.1, size = 3) +
+  facet_wrap(~ trial, ncol = 1) +
+  scale_color_manual(values = clr_trial) +
+  scale_x_continuous(limits = c(0.5, 4.5)) +
+  labs(
+    title    = "Sensitivity Analysis (Age < 65): Time to Extubation -- Three-Model Comparison",
+    subtitle = "OR (discrete-time) | HR (Cox) | sHR (Fine-Gray) with 95% CI -- age < 65 subgroup",
+    x        = "Effect Estimate (OR or HR; reference = 1)",
+    y        = NULL,
+    caption  = paste0(
+      "Age < 65 subgroup: ", n_u65_hosp, " hospitalizations, ",
+      n_u65_pp, " person-days. Age retained as continuous covariate within ",
+      "the restricted cohort (restricted-cohort SA, not a stratified ",
+      "analysis). Mirrors primary Analysis 3 three-model specification ",
+      "(Section 3.5).\n"
+    )
+  ) +
+  theme_abtrise() +
+  theme(legend.position = "none")
+
+export_png(fig_SA_A3, "figures/a3", "SA_age65_A3_forest.png",
+           width = 9, height = 6)
+
+# -- SA A4 figure: two-part model, mirrors primary fig_A4 structure -----------
+
+sa_a4_plot_data <- bind_rows(
+  tidy_sa_a4p1_u65 %>%
+    filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+    mutate(part = "Part 1: Alive at 28 Days\n(Mixed-Effects Logistic)",
+           metric = "OR"),
+  tidy_sa_a4p2_u65 %>%
+    filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+    mutate(part = "Part 2: VFD-28 Among Survivors\n(Mixed-Effects NB)",
+           metric = "IRR")
+) %>%
+  mutate(
+    trial     = if_else(str_detect(term, "SAT"), "SAT", "SBT"),
+    est_label = paste0(round(estimate, 2),
+                       " (", round(conf.low, 2),
+                       "–",  round(conf.high, 2), ")")
+  )
+
+fig_SA_A4 <- ggplot(sa_a4_plot_data,
+                    aes(x = estimate, xmin = conf.low, xmax = conf.high,
+                        y = trial, color = trial)) +
+  geom_vline(xintercept = 1, linetype = "dashed",
+             color = "gray50", linewidth = 0.6) +
+  geom_errorbarh(height = 0.25, linewidth = 0.9) +
+  geom_point(size = 4) +
+  geom_text(aes(label = est_label), hjust = -0.15, size = 3.2) +
+  facet_wrap(~ part, ncol = 2, scales = "free_x") +
+  scale_color_manual(values = clr_trial) +
+  scale_x_continuous(expand = expansion(mult = c(0.05, 0.35))) +
+  labs(
+    title    = "Sensitivity Analysis (Age < 65): VFD-28 Two-Part Model",
+    subtitle = "Part 1: OR for survival to 28d  |  Part 2: IRR for VFDs among survivors",
+    x        = "Effect Estimate (reference = 1)",
+    y        = NULL,
+    caption  = paste0(
+      "Age < 65 subgroup: ", nrow(df_a4_u65), " hospitalizations, ",
+      nrow(df_a4_surv_u65), " survivors for Part 2. Mirrors primary ",
+      "Analysis 4 model specification (Section 4.4); restricted-cohort SA, ",
+      "not a stratified analysis.\n"
+    )
+  ) +
+  theme_abtrise() +
+  theme(legend.position = "none")
+
+export_png(fig_SA_A4, "figures/a4", "SA_age65_A4_twopart.png",
+           width = 10, height = 5)
+
+# -- SA A5 figure: two-panel LOS/mortality, mirrors primary fig_A5 ------------
+# Overdispersion check repeated here for the u65 LOS model (not computed
+# elsewhere in the SA_age65 section above) so the figure caption isn't
+# reporting an unchecked model assumption -- mirrors the Section 5.1 check.
+
+pearson_resid_u65   <- residuals(fit_sa_a5los_u65, type = "pearson")
+dispersion_stat_u65 <- sum(pearson_resid_u65^2) / df.residual(fit_sa_a5los_u65)
+dispersion_flag_u65 <- case_when(
+  dispersion_stat_u65 > 2.0 ~ "HIGH -- investigate",
+  dispersion_stat_u65 > 1.5 ~ "MODERATE -- structurally expected in ICU LOS",
+  TRUE                      ~ "ok"
+)
+cat("SA_age65 A5 LOS overdispersion stat (Pearson chi2/df):",
+    round(dispersion_stat_u65, 3), "--", dispersion_flag_u65, "\n\n")
+
+sa_a5_plot_data <- bind_rows(
+  tidy_sa_a5los_u65 %>%
+    filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+    mutate(outcome = "Panel A: ICU LOS\n(ZTNB -- IRR)",
+           metric  = "IRR"),
+  tidy_sa_a5mort_u65 %>%
+    filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+    mutate(outcome = "Panel B: In-Hospital Mortality\n(Mixed Logistic -- OR)",
+           metric  = "OR")
+) %>%
+  mutate(
+    trial     = if_else(str_detect(term, "SAT"), "SAT", "SBT"),
+    est_label = paste0(round(estimate, 2),
+                       " (", round(conf.low, 2),
+                       "–",  round(conf.high, 2), ")")
+  )
+
+fig_SA_A5 <- ggplot(sa_a5_plot_data,
+                    aes(x = estimate, xmin = conf.low, xmax = conf.high,
+                        y = trial, color = trial)) +
+  geom_vline(xintercept = 1, linetype = "dashed",
+             color = "gray50", linewidth = 0.6) +
+  geom_errorbarh(height = 0.25, linewidth = 0.9) +
+  geom_point(size = 4) +
+  geom_text(aes(label = est_label), hjust = -0.15, size = 3.2) +
+  facet_wrap(~ outcome, ncol = 2, scales = "free_x") +
+  scale_color_manual(values = clr_trial) +
+  scale_x_continuous(expand = expansion(mult = c(0.05, 0.35))) +
+  labs(
+    title    = "Sensitivity Analysis (Age < 65): ICU LOS and In-Hospital Mortality",
+    subtitle = "IRR for ICU LOS (ZTNB)  |  OR for mortality (mixed logistic)",
+    x        = "Effect Estimate (reference = 1)",
+    y        = NULL,
+    caption  = paste0(
+      "Age < 65 subgroup: ", nrow(df_a5_u65), " hospitalizations. ",
+      "Overdispersion stat: ", round(dispersion_stat_u65, 2),
+      " (", dispersion_flag_u65, "). Mirrors primary Analysis 5 model ",
+      "specification (Section 5.3); model-based SEs only ",
+      "(Cameron & Miller 2015).\n"
+    )
+  ) +
+  theme_abtrise() +
+  theme(legend.position = "none")
+
+export_png(fig_SA_A5, "figures/a5", "SA_age65_A5_los_mortality.png",
+           width = 10, height = 5)
+
+cat("SA_age65 figures exported.\n\n")
+
 # --- SA_age65 exports ---------------------------------------------------------
 
 cat("-- SA_age65: Exporting outputs\n")
@@ -1701,6 +2009,34 @@ export_csv(
            n_subgroup  = n_distinct(df_dt_u65$hospitalization_id),
            warnings    = paste(sa_dt_u65_warnings, collapse = "; ")),
   "models/a3", "SA_age65_A3_dt_coefs.csv"
+)
+
+export_csv(
+  tidy_cox_u65 %>%
+    mutate(model       = "SA_age65_A3_cox",
+           subgroup    = "age_lt65",
+           n_subgroup  = n_distinct(df_cox_u65$hospitalization_id),
+           warnings    = paste(fit_cox_u65_warnings, collapse = "; ")),
+  "models/a3", "SA_age65_A3_cox_coefs.csv"
+)
+
+export_csv(
+  tidy_fg_u65 %>%
+    mutate(model       = "SA_age65_A3_finegray",
+           subgroup    = "age_lt65",
+           n_subgroup  = nrow(df_fg_u65),
+           warnings    = paste(fit_fg_u65_warnings, collapse = "; ")),
+  "models/a3", "SA_age65_A3_fg_coefs.csv"
+)
+
+export_csv(
+  cif_data_u65 %>% mutate(subgroup = "age_lt65"),
+  "models/a3", "SA_age65_A3_fg_cumulative_incidence.csv"
+)
+
+export_csv(
+  cif_data_u65 %>% mutate(subgroup = "age_lt65"),   # figure-ready copy, mirrors Section 3.6
+  "figures/a3", "SA_age65_A3_fig_cif_curves.csv"
 )
 
 export_csv(

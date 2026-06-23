@@ -41,7 +41,7 @@
 # =============================================================================
 
 # --- Load setup (runs Sections 0-2 automatically) ----------------------------
-source(here::here("code", "ABTRISE_01_setup_c.R"))
+source(here::here("ABTRISE_01_setup_c.R"))
 
 # SECTION 2-B: ANALYSIS 6 -- HOSPITAL BENCHMARKING
 # =============================================================================
@@ -50,21 +50,6 @@ cat("============================================================\n")
 cat("ANALYSIS 6: Hospital Benchmarking (Risk-Adjusted Delivery Rates)\n")
 cat("============================================================\n\n")
 
-# DESIGN NOTES (see script header for full rationale):
-#   - Two separate GLMMs: SAT delivery | SBT delivery
-#   - Unit of analysis: eligible vent-day (one row per eligible day)
-#   - Outcome: delivered (0/1) among eligible days
-#   - Covariates: age, sex, CCI, SOFA_prior, FiO2_prior, PEEP_prior,
-#                 sedation_prior, NEE_prior (binary), hospital_type, location_type
-#   - Random intercept: (1|hospital_id) -- suppressed for single-hospital sites
-#   - 2-level model only (vent-days within hospitals); patient RE omitted
-#     for consistency with A3–A5
-#   - ICC(patient) computed as diagnostic from residuals -- always exported
-#   - Dual output tracks:
-#       Track 1 (local GLMM): coefficients + BLUPs + MOR/VPC -- multi-hospital only
-#       Track 2 (CC aggregate): hospital summary CSV -- always exported
-#   - CCC + Bland-Altman: gated on site_has_flowsheet_sat / _sbt
-#     minimum 3 flowsheet hospitals required to run
 
 # ---------------------------------------------------------------------------
 # 6.0 BUILD ANALYSIS 6 DATASETS
@@ -80,8 +65,7 @@ cat("-- 6.0 Building Analysis 6 datasets\n\n")
 # and available via source(). Reproduced here for reference only:
 #   covariates_a6 <- c("age", "sex", "CCI",
 #                      "SOFA_prior", "FiO2_prior", "PEEP_prior",
-#                      "sedation_prior", "NEE_prior",
-#                      "hospital_type", "location_type")
+#                      "sedation_prior", "NEE_prior")
 
 # --- A6 SAT dataset: eligible SAT days, complete case ----------------------
 df_a6_sat <- df_pp %>%
@@ -91,7 +75,7 @@ df_a6_sat <- df_pp %>%
     !is.na(age), !is.na(sex), !is.na(CCI),
     !is.na(SOFA_prior), !is.na(FiO2_prior), !is.na(PEEP_prior),
     !is.na(sedation_prior),
-    !is.na(hospital_type), !is.na(location_type)
+  
     # NEE_prior: binary-recoded in Section 2.4 (NA=0) -- no NA filter needed
   ) %>%
   mutate(delivered = as.integer(SAT_delivered_primary))
@@ -104,7 +88,7 @@ df_a6_sbt <- df_pp %>%
     !is.na(age), !is.na(sex), !is.na(CCI),
     !is.na(SOFA_prior), !is.na(FiO2_prior), !is.na(PEEP_prior),
     !is.na(sedation_prior),
-    !is.na(hospital_type), !is.na(location_type)
+
   ) %>%
   mutate(delivered = as.integer(SBT_delivered_2min))
 
@@ -297,9 +281,6 @@ run_a6_glmm <- function(trial_label, data) {
 
   # --- ICC(patient) diagnostic -----------------------------------------------
   # Computed from model residuals using the latent variable approach:
-  # ICC(patient) approx = variance explained by patient / total variance
-  # Estimated via pearson residual variance partitioned by patient
-  # This is a diagnostic only -- no modeling decision made at site level
   # CC reviews across sites to assess whether 3-level model is warranted
 
   cat("  Computing ICC(patient) diagnostic...\n")
@@ -407,8 +388,8 @@ build_hosp_summary <- function(trial_label, data, raw_rate_col = "delivered") {
       sedation_prior_pct = round(mean(sedation_prior, na.rm = TRUE) * 100, 1),
       NEE_prior_pct      = round(mean(NEE_prior,      na.rm = TRUE) * 100, 1),
       # Fixed hospital-level characteristics (should be constant within hospital)
-      hospital_type      = first(as.character(hospital_type)),
-      location_type      = first(as.character(location_type)),
+     # hospital_type      = first(as.character(hospital_type)),
+      #location_type      = first(as.character(location_type)),
       .groups            = "drop"
     ) %>%
     mutate(single_hospital_site = single_hospital)
@@ -432,8 +413,6 @@ cat("\n")
 # Runs only at sites with flowsheet data AND >= 3 hospitals with flowsheet
 # Compares algorithm delivery RATE per hospital vs. flowsheet delivery RATE
 # This is the hospital-level agreement analysis (distinct from day-level A2)
-# CCC: Lin's concordance correlation -- captures correlation + absolute agreement
-# Bland-Altman: reveals systematic bias (algorithm consistently over/underestimates)
 
 cat("-- 6.4 CCC + Bland-Altman: EHR vs. flowsheet agreement\n\n")
 
@@ -586,7 +565,7 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
         "(Rogers et al. 2013).\n",
         "CIs reflect conditional variance of random effects (postVar).\n",
         "Hospital labels de-identified -- H1 = lowest, H",
-        nrow(blup_plot), " = highest rate."
+        nrow(blup_plot), " = highest rate.\n"
       )
     ) +
     theme_abtrise()
@@ -637,7 +616,7 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
         "Points outside control limits are statistical outliers.\n",
         "Small hospitals naturally show wider scatter -- compare with\n",
         "caterpillar plot (BLUP-shrunk estimates) for full picture.\n",
-        "Spiegelhalter (Stat Med 2005)."
+        "Spiegelhalter (Stat Med 2005).\n"
       )
     ) +
     theme_abtrise()
@@ -686,6 +665,15 @@ export_rds(a6_sbt$fit, "models/a6", "A6_fit_SBT_glmm.rds")
 
 # --- Track 2: Hospital aggregate summary (CC pooled model input) -----------
 export_csv(hosp_summary_all, "models/a6", "A6_hospital_aggregate_summary.csv")
+
+# SA: Hospital aggregate summary split by age group (<65 vs >=65)
+hosp_summary_age_split <- bind_rows(
+  build_hosp_summary("SAT", df_a6_sat %>% filter(age <  65)) %>% mutate(age_group = "age_u65"),
+  build_hosp_summary("SAT", df_a6_sat %>% filter(age >= 65)) %>% mutate(age_group = "age_ge65"),
+  build_hosp_summary("SBT", df_a6_sbt %>% filter(age <  65)) %>% mutate(age_group = "age_u65"),
+  build_hosp_summary("SBT", df_a6_sbt %>% filter(age >= 65)) %>% mutate(age_group = "age_ge65")
+)
+export_csv(hosp_summary_age_split, "models/a6", "SA_age_split_A6_hospital_aggregate_summary.csv")
 
 # --- CCC + Bland-Altman ----------------------------------------------------
 if (!is.null(a6_ccc_sat)) {

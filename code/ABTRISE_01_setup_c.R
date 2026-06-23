@@ -70,7 +70,7 @@ suppressPackageStartupMessages({
   library(blandr)       # Bland-Altman (A6)
 })
 
-cat("=== ABT-RISE Site Analysis Scripts ===\n")
+cat("=== ABT-RISE Site Analysis ===\n")
 cat("Site:", site_id, "\n")
 cat("Setup started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n")
 
@@ -139,8 +139,7 @@ drop_single_level <- function(vars, data) {
 # and in greyscale print. Used consistently across all four scripts.
 #
 # Trial colors (SAT / SBT):
-#   SAT = blue (#0077BB), SBT = orange (#EE7733)
-#   Chosen for maximum contrast under all colorblindness simulations.
+#   SAT = blue (#0077BB), SBT = orange (#EE7733)#   Chosen for maximum contrast under all colorblindness simulations.
 #
 # Four-group palette (sedation figure, eligibility groups):
 #   Overall = blue, SAT-eligible = cyan, SBT-eligible = orange, Either = teal
@@ -178,7 +177,9 @@ theme_abtrise <- function(base_size = 11) {
 
 cat("-- Section 1: Loading data files\n")
 
+#PP: one row per patient, per day
 df_pp_raw   <- read_parquet(file.path(data_dir, "file1_person_period.parquet"))
+#hosp: one row per patient (current hospitalization)
 df_hosp_raw <- read_parquet(file.path(data_dir, "file2_hospitalization_level.parquet"))
 
 cat("File 1 (person-period):   ", nrow(df_pp_raw), "rows,",
@@ -187,16 +188,15 @@ cat("File 2 (hospitalization): ", nrow(df_hosp_raw), "rows\n")
 cat("Hospitals in File 1:      ", n_distinct(df_pp_raw$hospital_id), "\n")
 cat("Hospitals in File 2:      ", n_distinct(df_hosp_raw$hospital_id), "\n\n")
 
-# --- 1.7 Detect single-hospital site -----------------------------------------
+# --- 1.7 Detect single-hospital site, assign hospital RE where hospitals >1  -----------------------------------------
 
 n_hospitals     <- n_distinct(df_pp_raw$hospital_id)
 single_hospital <- (n_hospitals == 1)
 
 if (single_hospital) {
   cat("NOTE: Single-hospital site detected.",
-      "Random intercepts will be dropped; fixed-effects models only.\n\n")
+      "Random hospital intercepts will be dropped; fixed-effects models only.\n\n")
 }
-
 # Random intercept term -- suppressed for single-hospital sites
 # Used in all analysis model formulas
 re_hosp <- if (single_hospital) "" else "(1 | hospital_id)"
@@ -206,12 +206,7 @@ re_hosp <- if (single_hospital) "" else "(1 | hospital_id)"
 # =============================================================================
 
 cat("-- Section 2: Data preparation\n\n")
-
 # --- 2.1 Population consistency check ----------------------------------------
-# Identify hospitalizations in File 2 with zero algorithm vent days
-# (not present in File 1). These are fast-extubation survivors with
-
-
 cat("-- 2.1 Population consistency check\n")
 
 ids_pp   <- unique(df_pp_raw$hospitalization_id)
@@ -286,26 +281,19 @@ waterfall <- log_step(waterfall, "2_zero_vent_exclusion",
 # Flags and removes rows where key variables contain TRUE data coding errors --
 # values that are biologically or definitionally impossible regardless of cohort.
 #
-# IMPORTANT DISTINCTION -- two categories intentionally separated here:
-#
+# IMPORTANT DISTINCTION 
 #   (A) TRUE IMPOSSIBLE VALUES (handled here):
 #       Values that cannot exist in any real patient. SOFA > 24, FiO2 > 1.0,
-#       age < 18 in an adult ICU -- these are upstream coding errors.
-#       Rows are excluded and logged in the waterfall as data errors.
+#       age < 18 in an adult ICU 
 #
-#   (B) COHORT WINDOW / INCLUSION CRITERIA (handled elsewhere, NOT here):
-#       Values that are real but outside study scope. These get their own
-#       dedicated handling steps with appropriate clinical rationale:
+#   (B) COHORT WINDOW / INCLUSION CRITERIA (handled NOT here):
+#       Values that are real but outside study scope. 
 #         - vent_day > 28: handled by filter(vent_day <= 28) in Section 2.5
-#         - ICU_LOS upper cap: no cap applied -- LOS = 400 is a real patient,
-#           just not flagged as an error. Lower bound (>= 1) enforced in
-#           Analysis 5 dataset build as a structural cohort constraint.
+#         - ICU_LOS upper cap: no cap applied 
 #         - time_to_extubation > 28: capped at 28 in Fine-Gray construction
 #           (Section 3.4 of ABTRISE_345_outcomes.R), not a data error
 #         - days_to_death > 28: real patients who die after follow-up window;
 #           handled as censoring in survival models, not dropped here
-#         - VFD_28 > 28: definitionally impossible (kept below -- this IS
-#           a coding error, not a cohort criterion)
 
 cat("-- 2.3 Impossible values check\n")
 
@@ -323,8 +311,7 @@ impossible_ranges <- list(
   FiO2_mean      = c(0.21, 1.0),
   PEEP_mean      = c(0, 30),
   VFD_28         = c(0, 28)     # Cannot exceed 28 by definition; > 28 = derivation error
-  # NOT included (cohort window variables -- see note above):
-  #   vent_day, ICU_LOS, time_to_extubation, days_to_death
+
 )
 
 pp_range_vars   <- intersect(names(impossible_ranges), names(df_pp_raw))
@@ -363,7 +350,7 @@ if (n_flagged_pp > 0 | n_flagged_hosp > 0) {
   cat("  Flagged rows contain true data coding errors and will be excluded.\n")
   cat("  See impossible_values.csv for detail. Contact CC if n_flagged is large.\n")
 } else {
-  cat("\nNo impossible values detected. No rows excluded on this basis.\n")
+  cat("\nNo impossible values detected. No rows excluded.\n")
 }
 cat("\n")
 
@@ -397,9 +384,7 @@ waterfall <- log_step(waterfall, "3_data_coding_error_exclusion",
 export_csv(impossible_all, "diagnostics", "impossible_values.csv")
 
 # --- 2.4 Person-period file prep (File 1) ------------------------------------
-
 cat("-- 2.4 Person-period file preparation\n")
-
 df_pp <- df_pp_raw %>%
   filter(vent_day >= 1, vent_day <= 28) %>%
   left_join(
@@ -438,9 +423,7 @@ cat("Extubation events:", sum(df_pp$extubated,   na.rm = TRUE), "\n")
 cat("Death events:     ", sum(df_pp$died_today,  na.rm = TRUE), "\n\n")
 
 # --- 2.5 Hospitalization-level file prep (File 2) ----------------------------
-
 cat("-- 2.5 Hospitalization-level file preparation\n")
-
 df_hosp <- df_hosp_raw %>%
   mutate(
     survivor_28d    = as.integer(death_flag == 0),
@@ -491,12 +474,10 @@ cat("Survivors at 28d: ", sum(df_hosp$survivor_28d,    na.rm = TRUE), "\n\n")
 # =============================================================================
 # SEDATION OVERLAP DIAGNOSTICS
 # =============================================================================
-
 # --- 1. Hospitalization level: how many agents ever used (from df_hosp) ------
 # Uses *_mean > 0 as proxy for "agent used on >= 1 vent day"
 
 cat("-- Sedation overlap: hospitalization level\n")
-
 sed_agents <- c("propofol", "fentanyl", "hydromorphone",
                 "morphine", "lorazepam", "midazolam", "nmb")
 
@@ -518,7 +499,6 @@ cat(" n =", sum(hosp_sed$n_agents_ever > 1),
 
 # --- 2. Patient-day level: how many agents on same vent day (from df_pp) -----
 # Uses *_prior_flag variables (binary: agent given on that day)
-
 cat("-- Sedation overlap: patient-day level\n")
 
 day_agents <- c("propofol_prior_flag", "fentanyl_prior_flag",
