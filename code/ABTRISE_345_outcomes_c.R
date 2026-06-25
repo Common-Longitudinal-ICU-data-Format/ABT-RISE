@@ -13,24 +13,22 @@
 #   Setup runs automatically -- do NOT run ABTRISE_01_setup.R separately first.
 #
 # WHAT THIS SCRIPT PRODUCES:
-#   outputs/models/a3/    A3_dt_primary_coefs.csv, A3_dt_primary_re_variance.csv,
-#                         A3_cox_secondary_coefs.csv, A3_fg_secondary_coefs.csv,
-#                         A3_fg_cumulative_incidence.csv, A3_sensitivity_coefs.csv,
-#                         SA_age65_A3_dt_coefs.csv,
-#                         A3_fit_*.rds
-#   outputs/models/a4/    A4_part1_alive28d_coefs.csv, A4_part2_vfd_survivors_coefs.csv,
-#                         A4_vfd28_descriptive.csv, A4_sensitivity_coefs.csv,
-#                         SA_age65_A4_coefs.csv,
-#                         A4_fit_*.rds
-#   outputs/models/a5/    A5_icu_los_coefs.csv, A5_icu_los_overdispersion.csv,
-#                         A5_mortality_coefs.csv, A5_sensitivity_coefs.csv,
-#                         SA_age65_A5_coefs.csv,
-#                         A5_fit_*.rds
-#   outputs/figures/a3/   fig_A3_dt_forest.png, A3_fig_cif_curves.csv
-#   outputs/figures/a4/   fig_A4_twopart.png, A4_fig_vfd_distribution.csv
-#   outputs/figures/a5/   fig_A5_los_mortality.png, A5_fig_los_distribution.csv
-#   outputs/tables/       vfd28_descriptive.csv
-#   outputs/diagnostics/  session_info_a345.txt
+#   outputs/A3_tte_outcomes/models/   A3_dt_primary_coefs.csv, A3_dt_primary_re_variance.csv,
+#                                    A3_cox_secondary_coefs.csv, A3_fg_secondary_coefs.csv,
+#                                    A3_fg_cumulative_incidence.csv, A3_sensitivity_coefs.csv,
+#                                    SA_age65_A3_dt_coefs.csv, A3_fit_*.rds
+#   outputs/A3_tte_outcomes/figures/  fig_A3_dt_forest.png, A3_fig_cif_curves.csv
+#   outputs/A4_VFD_outcomes/models/   A4_part1_alive28d_coefs.csv, A4_part2_vfd_survivors_coefs.csv,
+#                                    A4_vfd28_descriptive.csv, A4_sensitivity_coefs.csv,
+#                                    SA_age65_A4_coefs.csv, A4_fit_*.rds
+#   outputs/A4_VFD_outcomes/tables/   vfd28_descriptive.csv
+#   outputs/A4_VFD_outcomes/figures/  fig_A4_twopart.png, A4_fig_vfd_distribution.csv
+#   outputs/A5_mort_outcomes/models/  A5_icu_los_coefs.csv, A5_icu_los_overdispersion.csv,
+#                                    A5_mortality_coefs.csv, A5_sensitivity_coefs.csv,
+#                                    SA_age65_A5_coefs.csv, A5_fit_*.rds
+#   outputs/A5_mort_outcomes/figures/ fig_A5_los_mortality.png, A5_fig_los_distribution.csv
+#   outputs/diagnostics/              fig_adj_comparison.png, fig_adj_comparison_data.csv,
+#                                    session_info_a345.txt
 #
 # ANALYSIS 3: Time to extubation (primary construct validity)
 #   3.1  Discrete-time logistic regression (PRIMARY)
@@ -457,7 +455,7 @@ fig_A3_forest <- ggplot(forest_data_A3,
   theme_abtrise() +
   theme(legend.position = "none")
 
-export_png(fig_A3_forest, "figures/a3", "fig_A3_dt_forest.png",
+export_png(fig_A3_forest, "A3_tte_outcomes/figures", "fig_A3_dt_forest.png",
            width = 9, height = 6)
 
 # --- 3.S SENSITIVITY: Alternative exposure definitions -----------------------
@@ -538,44 +536,91 @@ export_csv(
   tidy_dt_primary %>% mutate(model = "A3_primary_discrete_time",
                              warnings = paste(fit_dt_primary_warnings,
                                               collapse = "; ")),
-  "models/a3", "A3_dt_primary_coefs.csv"
+  "A3_tte_outcomes/models", "A3_dt_primary_coefs.csv"
 )
 
 export_csv(
   re_var_dt,
-  "models/a3", "A3_dt_primary_re_variance.csv"
+  "A3_tte_outcomes/models", "A3_dt_primary_re_variance.csv"
 )
 
 export_csv(
   tidy_cox %>% mutate(model    = "A3_secondary_cox",
                       warnings = paste(fit_cox_warnings, collapse = "; ")),
-  "models/a3", "A3_cox_secondary_coefs.csv"
+  "A3_tte_outcomes/models", "A3_cox_secondary_coefs.csv"
 )
 
 export_csv(
   tidy_fg %>% mutate(model    = "A3_secondary_finegray",
                      warnings = paste(fit_fg_warnings, collapse = "; ")),
-  "models/a3", "A3_fg_secondary_coefs.csv"
+  "A3_tte_outcomes/models", "A3_fg_secondary_coefs.csv"
 )
 
 export_csv(
   cif_data,
-  "models/a3", "A3_fg_cumulative_incidence.csv"
+  "A3_tte_outcomes/models", "A3_fg_cumulative_incidence.csv"
 )
 
 export_csv(
   cif_data,   # same data, figure-ready copy in figures/a3/
-  "figures/a3", "A3_fig_cif_curves.csv"
+  "A3_tte_outcomes/figures", "A3_fig_cif_curves.csv"
 )
 
 export_csv(
   results_3_sensitivity %>% mutate(analysis = "A3"),
-  "models/a3", "A3_sensitivity_coefs.csv"
+  "A3_tte_outcomes/models", "A3_sensitivity_coefs.csv"
 )
 
-export_rds(fit_dt_primary, "models/a3", "A3_fit_dt_primary.rds")
-export_rds(fit_cox,        "models/a3", "A3_fit_cox_secondary.rds")
-export_rds(fit_fg,         "models/a3", "A3_fit_fg_secondary.rds")
+export_rds(fit_dt_primary, "A3_tte_outcomes/models", "A3_fit_dt_primary.rds")
+export_rds(fit_cox,        "A3_tte_outcomes/models", "A3_fit_cox_secondary.rds")
+export_rds(fit_fg,         "A3_tte_outcomes/models", "A3_fit_fg_secondary.rds")
+
+# --- 3.7 Patient-only GLM (no hospital RE) -- adjustment comparison input -----
+# Fits the same discrete-time model without the hospital random intercept.
+# Used exclusively by the Section 7 adjustment comparison figure.
+# Exported so the CC can pool/audit both adjustment levels symmetrically.
+
+cat("-- 3.7 Patient-only GLM (no hospital RE) for adjustment comparison\n")
+
+f_dt_nore <- reformulate(
+  termlabels = c(
+    "SAT_delivered_primary", "SBT_delivered_2min",
+    "ns(vent_day, df = 3)",
+    covariates_tv_dt, covariates_baseline_dt
+  ),
+  response = "extubated"
+)
+
+fit_dt_nore_warnings <- character(0)
+
+fit_dt_nore <- withCallingHandlers(
+  glm(f_dt_nore, data = df_dt, family = binomial(link = "logit")),
+  warning = function(w) {
+    fit_dt_nore_warnings <<- c(fit_dt_nore_warnings, conditionMessage(w))
+    invokeRestart("muffleWarning")
+  }
+)
+
+if (length(fit_dt_nore_warnings) > 0)
+  cat("WARNINGS:", paste(fit_dt_nore_warnings, collapse = "; "), "\n")
+
+tidy_dt_nore <- broom::tidy(fit_dt_nore, conf.int = TRUE, exponentiate = TRUE)
+
+cat("A3 patient-only GLM -- primary exposure terms:\n")
+tidy_dt_nore %>%
+  filter(str_detect(term, "SAT_delivered|SBT_delivered")) %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  print()
+cat("\n")
+
+export_csv(
+  tidy_dt_nore %>% mutate(
+    model      = "A3_dt_patient_only_glm",
+    adjustment = "patient_only_no_hospital_RE",
+    warnings   = paste(fit_dt_nore_warnings, collapse = "; ")
+  ),
+  "A3_tte_outcomes/models", "A3_dt_patient_only_coefs.csv"
+)
 
 cat("\nAnalysis 3 complete.\n\n")
 
@@ -836,7 +881,7 @@ fig_A4 <- ggplot(a4_plot_data,
   theme_abtrise() +
   theme(legend.position = "none")
 
-export_png(fig_A4, "figures/a4", "fig_A4_twopart.png",
+export_png(fig_A4, "A4_VFD_outcomes/figures", "fig_A4_twopart.png",
            width = 10, height = 5)
 
 # VFD-28 distribution percentiles for CC figure construction
@@ -945,37 +990,120 @@ cat("-- 4.5 Exporting Analysis 4 outputs\n")
 export_csv(
   tidy_a4p1 %>% mutate(model    = "A4_part1_alive28d",
                        warnings = paste(fit_a4p1_warnings, collapse = "; ")),
-  "models/a4", "A4_part1_alive28d_coefs.csv"
+  "A4_VFD_outcomes/models", "A4_part1_alive28d_coefs.csv"
 )
 
 export_csv(
   tidy_a4p2 %>% mutate(model    = "A4_part2_VFD_survivors",
                        warnings = paste(fit_a4p2_warnings, collapse = "; ")),
-  "models/a4", "A4_part2_vfd_survivors_coefs.csv"
+  "A4_VFD_outcomes/models", "A4_part2_vfd_survivors_coefs.csv"
 )
 
 export_csv(
   vfd_desc %>% mutate(model = "A4_descriptive_VFD28"),
-  "models/a4", "A4_vfd28_descriptive.csv"
+  "A4_VFD_outcomes/models", "A4_vfd28_descriptive.csv"
 )
 
 export_csv(
   vfd_desc %>% mutate(model = "A4_descriptive_VFD28"),
-  "tables", "vfd28_descriptive.csv"
+  "A4_VFD_outcomes/tables", "vfd28_descriptive.csv"
 )
 
 export_csv(
   vfd_percentiles,
-  "figures/a4", "A4_fig_vfd_distribution.csv"
+  "A4_VFD_outcomes/figures", "A4_fig_vfd_distribution.csv"
 )
 
 export_csv(
   results_4_sensitivity %>% mutate(analysis = "A4"),
-  "models/a4", "A4_sensitivity_coefs.csv"
+  "A4_VFD_outcomes/models", "A4_sensitivity_coefs.csv"
 )
 
-export_rds(fit_a4_part1, "models/a4", "A4_fit_part1_alive28d.rds")
-export_rds(fit_a4_part2, "models/a4", "A4_fit_part2_VFD_survivors.rds")
+export_rds(fit_a4_part1, "A4_VFD_outcomes/models", "A4_fit_part1_alive28d.rds")
+export_rds(fit_a4_part2, "A4_VFD_outcomes/models", "A4_fit_part2_VFD_survivors.rds")
+
+# --- 4.6 Patient-only GLMs (no hospital RE) -- adjustment comparison input ----
+
+cat("-- 4.6 Patient-only GLMs (no hospital RE) for adjustment comparison\n")
+
+# Part 1: binomial GLM
+f_a4p1_nore <- reformulate(
+  termlabels = c("SAT_prop_final_primary", "SBT_prop_final_2min",
+                 covars_episode_a4p1),
+  response = "alive_28d"
+)
+
+fit_a4p1_nore_warnings <- character(0)
+fit_a4p1_nore <- withCallingHandlers(
+  glm(f_a4p1_nore, data = df_a4, family = binomial(link = "logit")),
+  warning = function(w) {
+    fit_a4p1_nore_warnings <<- c(fit_a4p1_nore_warnings, conditionMessage(w))
+    invokeRestart("muffleWarning")
+  }
+)
+if (length(fit_a4p1_nore_warnings) > 0)
+  cat("  Part 1 WARNINGS:", paste(fit_a4p1_nore_warnings, collapse = "; "), "\n")
+
+tidy_a4p1_nore <- broom::tidy(fit_a4p1_nore, conf.int = TRUE, exponentiate = TRUE)
+
+# Part 2: NB GLM (standard NB, not zero-truncated -- GLM family limitation;
+# noted in model_type column so CC is aware of the distributional difference)
+f_a4p2_nore <- reformulate(
+  termlabels = c("SAT_prop_final_primary", "SBT_prop_final_2min",
+                 covars_episode_a4p2),
+  response = "VFD_28"
+)
+
+fit_a4p2_nore_warnings <- character(0)
+fit_a4p2_nore <- tryCatch(
+  withCallingHandlers(
+    MASS::glm.nb(f_a4p2_nore, data = df_a4_surv),
+    warning = function(w) {
+      fit_a4p2_nore_warnings <<- c(fit_a4p2_nore_warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  ),
+  error = function(e) {
+    cat("  Part 2 MASS::glm.nb failed -- falling back to quasipoisson.",
+        "\n  Error:", conditionMessage(e), "\n")
+    fit_a4p2_nore_warnings <<- c(fit_a4p2_nore_warnings,
+                                  paste("glm.nb failed; quasipoisson used:",
+                                        conditionMessage(e)))
+    glm(f_a4p2_nore, data = df_a4_surv, family = quasipoisson(link = "log"))
+  }
+)
+if (length(fit_a4p2_nore_warnings) > 0)
+  cat("  Part 2 WARNINGS:", paste(fit_a4p2_nore_warnings, collapse = "; "), "\n")
+
+tidy_a4p2_nore <- broom::tidy(fit_a4p2_nore, conf.int = TRUE, exponentiate = TRUE)
+
+cat("A4 patient-only GLMs -- primary exposure terms:\n")
+bind_rows(
+  tidy_a4p1_nore %>% filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+    mutate(part = "Part1_alive28d"),
+  tidy_a4p2_nore %>% filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+    mutate(part = "Part2_VFD_survivors")
+) %>% select(part, term, estimate, conf.low, conf.high, p.value) %>% print()
+cat("\n")
+
+export_csv(
+  bind_rows(
+    tidy_a4p1_nore %>%
+      mutate(model      = "A4_part1_alive28d_patient_only_glm",
+             part       = "Part1_alive28d",
+             adjustment = "patient_only_no_hospital_RE",
+             model_type = "binomial_glm",
+             warnings   = paste(fit_a4p1_nore_warnings, collapse = "; ")),
+    tidy_a4p2_nore %>%
+      mutate(model      = "A4_part2_VFD_patient_only_glm",
+             part       = "Part2_VFD_survivors",
+             adjustment = "patient_only_no_hospital_RE",
+             model_type = if (inherits(fit_a4p2_nore, "negbin"))
+                            "negative_binomial_glm" else "quasipoisson_glm",
+             warnings   = paste(fit_a4p2_nore_warnings, collapse = "; "))
+  ),
+  "A4_VFD_outcomes/models", "A4_patient_only_coefs.csv"
+)
 
 cat("\nAnalysis 4 complete.\n\n")
 # =============================================================================
@@ -1009,7 +1137,25 @@ df_a5 <- df_hosp %>%
     ICU_LOS >= 1    # Structural constraint: LOS >= 1 by cohort definition
   )
 
-# Log complete case step to waterfall
+# Coerce ICU_LOS to integer via ceiling() -- required by glmmTMB's
+# truncated_nbinom2 family, which expects strict integer counts and warns
+# otherwise. Ceiling is the most defensible clinical convention for partial-
+# day LOS (any time in the ICU on a calendar day = 1 bed day), and preserves
+# the >= 1 constraint for all rows passing the filter above.
+# Scoped to df_a5 only: df_hosp retains fractional values for Table 1
+# descriptives and other analyses that do not model LOS as a count outcome.
+n_los_noninteger <- sum(df_a5$ICU_LOS != floor(df_a5$ICU_LOS), na.rm = TRUE)
+if (n_los_noninteger > 0) {
+  cat("ICU_LOS ceiling coercion:", n_los_noninteger, "of", nrow(df_a5),
+      "rows had fractional LOS (",
+      round(n_los_noninteger / nrow(df_a5) * 100, 1),
+      "%). Applied as.integer(ceiling(ICU_LOS)) to resolve",
+      "truncated_nbinom2 warning.\n\n")
+} else {
+  cat("ICU_LOS: all values already integer. Ceiling coercion applied",
+      "(no-op -- warning would not have fired).\n\n")
+}
+df_a5 <- df_a5 %>% mutate(ICU_LOS = as.integer(ceiling(ICU_LOS)))
 waterfall <- log_step(waterfall, "5_complete_case_A5",
                       "File2", nrow(df_a5),
                       nrow(df_hosp) - nrow(df_a5),
@@ -1096,16 +1242,22 @@ cat("  (fast-extubation vs. prolonged ventilation). Pilot stat: 1.65.\n\n")
 
 # Overdispersion as standalone export
 overdispersion_out <- tibble(
-  model           = "A5_ICU_LOS_ZTNB",
-  dispersion_stat = round(dispersion_stat, 4),
-  n_obs           = nrow(df_a5),
-  df_residual     = df.residual(fit_a5_los),
-  flag            = dispersion_flag,
-  note            = paste0(
+  model              = "A5_ICU_LOS_ZTNB",
+  dispersion_stat    = round(dispersion_stat, 4),
+  n_obs              = nrow(df_a5),
+  df_residual        = df.residual(fit_a5_los),
+  flag               = dispersion_flag,
+  icu_los_coercion   = "ceiling",
+  n_los_ceiled       = n_los_noninteger,
+  pct_los_ceiled     = round(n_los_noninteger / nrow(df_a5) * 100, 2),
+  note               = paste0(
     "Threshold: >1.5 = structurally expected (bimodal ICU LOS); ",
     ">2.0 = investigate. ",
     "Structural overdispersion reflects mixture of fast-extubation ",
-    "and prolonged ventilation trajectories."
+    "and prolonged ventilation trajectories. ",
+    "ICU_LOS coerced to integer via ceiling() before model fit; ",
+    n_los_noninteger, " rows (", round(n_los_noninteger/nrow(df_a5)*100,1),
+    "%) had fractional values in the source data."
   )
 )
 
@@ -1232,7 +1384,7 @@ fig_A5 <- ggplot(a5_plot_data,
   theme_abtrise() +
   theme(legend.position = "none")
 
-export_png(fig_A5, "figures/a5", "fig_A5_los_mortality.png",
+export_png(fig_A5, "A5_mort_outcomes/figures", "fig_A5_los_mortality.png",
            width = 10, height = 5)
 
 # LOS distribution percentiles for CC figure construction
@@ -1342,35 +1494,117 @@ cat("-- 5.4 Exporting Analysis 5 outputs\n")
 export_csv(
   tidy_a5_los %>% mutate(model    = "A5_ICU_LOS_ZTNB",
                          warnings = paste(fit_a5los_warnings, collapse = "; ")),
-  "models/a5", "A5_icu_los_coefs.csv"
+  "A5_mort_outcomes/models", "A5_icu_los_coefs.csv"
 )
 
 export_csv(
   overdispersion_out,
-  "models/a5", "A5_icu_los_overdispersion.csv"
+  "A5_mort_outcomes/models", "A5_icu_los_overdispersion.csv"
 )
 
 export_csv(
   tidy_a5_mort %>% mutate(model    = "A5_mortality_logistic",
                           warnings = paste(fit_a5mort_warnings, collapse = "; ")),
-  "models/a5", "A5_mortality_coefs.csv"
+  "A5_mort_outcomes/models", "A5_mortality_coefs.csv"
 )
 
 export_csv(
   results_5_sensitivity %>% mutate(analysis = "A5"),
-  "models/a5", "A5_sensitivity_coefs.csv"
+  "A5_mort_outcomes/models", "A5_sensitivity_coefs.csv"
 )
 
 export_csv(
   los_percentiles,
-  "figures/a5", "A5_fig_los_distribution.csv"
+  "A5_mort_outcomes/figures", "A5_fig_los_distribution.csv"
 )
 
-export_rds(fit_a5_los,  "models/a5", "A5_fit_ICU_LOS_ZTNB.rds")
-export_rds(fit_a5_mort, "models/a5", "A5_fit_mortality_logistic.rds")
+export_rds(fit_a5_los,  "A5_mort_outcomes/models", "A5_fit_ICU_LOS_ZTNB.rds")
+export_rds(fit_a5_mort, "A5_mort_outcomes/models", "A5_fit_mortality_logistic.rds")
 
+# --- 5.5 Patient-only GLMs (no hospital RE) -- adjustment comparison input ----
 
-# =============================================================================
+cat("-- 5.5 Patient-only GLMs (no hospital RE) for adjustment comparison\n")
+
+# ICU LOS: standard NB (not zero-truncated -- GLM family limitation;
+# noted in model_type so CC is aware of distributional difference vs primary)
+f_a5los_nore <- reformulate(
+  termlabels = c("SAT_prop_final_primary", "SBT_prop_final_2min",
+                 covars_episode_a5los),
+  response = "ICU_LOS"
+)
+
+fit_a5los_nore_warnings <- character(0)
+fit_a5los_nore <- tryCatch(
+  withCallingHandlers(
+    MASS::glm.nb(f_a5los_nore, data = df_a5),
+    warning = function(w) {
+      fit_a5los_nore_warnings <<- c(fit_a5los_nore_warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  ),
+  error = function(e) {
+    cat("  LOS MASS::glm.nb failed -- falling back to quasipoisson.",
+        "\n  Error:", conditionMessage(e), "\n")
+    fit_a5los_nore_warnings <<- c(fit_a5los_nore_warnings,
+                                   paste("glm.nb failed; quasipoisson used:",
+                                         conditionMessage(e)))
+    glm(f_a5los_nore, data = df_a5, family = quasipoisson(link = "log"))
+  }
+)
+if (length(fit_a5los_nore_warnings) > 0)
+  cat("  LOS WARNINGS:", paste(fit_a5los_nore_warnings, collapse = "; "), "\n")
+
+tidy_a5los_nore <- broom::tidy(fit_a5los_nore, conf.int = TRUE,
+                                exponentiate = TRUE)
+
+# Mortality: binomial GLM
+f_a5mort_nore <- reformulate(
+  termlabels = c("SAT_prop_final_primary", "SBT_prop_final_2min",
+                 covars_episode_a5mort),
+  response = "death_flag"
+)
+
+fit_a5mort_nore_warnings <- character(0)
+fit_a5mort_nore <- withCallingHandlers(
+  glm(f_a5mort_nore, data = df_a5, family = binomial(link = "logit")),
+  warning = function(w) {
+    fit_a5mort_nore_warnings <<- c(fit_a5mort_nore_warnings, conditionMessage(w))
+    invokeRestart("muffleWarning")
+  }
+)
+if (length(fit_a5mort_nore_warnings) > 0)
+  cat("  Mortality WARNINGS:", paste(fit_a5mort_nore_warnings, collapse = "; "), "\n")
+
+tidy_a5mort_nore <- broom::tidy(fit_a5mort_nore, conf.int = TRUE,
+                                 exponentiate = TRUE)
+
+cat("A5 patient-only GLMs -- primary exposure terms:\n")
+bind_rows(
+  tidy_a5los_nore  %>% filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+    mutate(outcome = "ICU_LOS"),
+  tidy_a5mort_nore %>% filter(str_detect(term, "SAT_prop|SBT_prop")) %>%
+    mutate(outcome = "mortality")
+) %>% select(outcome, term, estimate, conf.low, conf.high, p.value) %>% print()
+cat("\n")
+
+export_csv(
+  bind_rows(
+    tidy_a5los_nore %>%
+      mutate(model      = "A5_ICU_LOS_patient_only_glm",
+             outcome    = "ICU_LOS",
+             adjustment = "patient_only_no_hospital_RE",
+             model_type = if (inherits(fit_a5los_nore, "negbin"))
+                            "negative_binomial_glm" else "quasipoisson_glm",
+             warnings   = paste(fit_a5los_nore_warnings, collapse = "; ")),
+    tidy_a5mort_nore %>%
+      mutate(model      = "A5_mortality_patient_only_glm",
+             outcome    = "mortality",
+             adjustment = "patient_only_no_hospital_RE",
+             model_type = "binomial_glm",
+             warnings   = paste(fit_a5mort_nore_warnings, collapse = "; "))
+  ),
+  "A5_mort_outcomes/models", "A5_patient_only_coefs.csv"
+)
 # SECTION 6: SENSITIVITY ANALYSIS -- AGE < 65 SUBGROUP
 # =============================================================================
 # Repeats primary models from A3, A4, A5 restricted to patients aged < 65.
@@ -1455,7 +1689,9 @@ df_a5_u65 <- df_hosp_u65 %>%
     !is.na(SOFA_mean), !is.na(FiO2_mean), !is.na(PEEP_mean),
     !is.na(sedation_mean), !is.na(ICU_LOS), !is.na(death_flag),
     ICU_LOS >= 1
-  )
+  ) %>%
+  # Mirrors primary A5 coercion: ceiling() for truncated_nbinom2 compatibility
+  mutate(ICU_LOS = as.integer(ceiling(ICU_LOS)))
 
 cat("Age < 65 complete-case sizes:\n")
 cat("  A4 dataset:       ", nrow(df_a4_u65), "| Survivors:", nrow(df_a4_surv_u65), "\n")
@@ -1883,7 +2119,7 @@ fig_SA_A3 <- ggplot(sa_a3_plot_data,
   theme_abtrise() +
   theme(legend.position = "none")
 
-export_png(fig_SA_A3, "figures/a3", "SA_age65_A3_forest.png",
+export_png(fig_SA_A3, "A3_tte_outcomes/figures", "SA_age65_A3_forest.png",
            width = 9, height = 6)
 
 # -- SA A4 figure: two-part model, mirrors primary fig_A4 structure -----------
@@ -1931,7 +2167,7 @@ fig_SA_A4 <- ggplot(sa_a4_plot_data,
   theme_abtrise() +
   theme(legend.position = "none")
 
-export_png(fig_SA_A4, "figures/a4", "SA_age65_A4_twopart.png",
+export_png(fig_SA_A4, "A4_VFD_outcomes/figures", "SA_age65_A4_twopart.png",
            width = 10, height = 5)
 
 # -- SA A5 figure: two-panel LOS/mortality, mirrors primary fig_A5 ------------
@@ -1993,7 +2229,7 @@ fig_SA_A5 <- ggplot(sa_a5_plot_data,
   theme_abtrise() +
   theme(legend.position = "none")
 
-export_png(fig_SA_A5, "figures/a5", "SA_age65_A5_los_mortality.png",
+export_png(fig_SA_A5, "A5_mort_outcomes/figures", "SA_age65_A5_los_mortality.png",
            width = 10, height = 5)
 
 cat("SA_age65 figures exported.\n\n")
@@ -2008,7 +2244,7 @@ export_csv(
            subgroup    = "age_lt65",
            n_subgroup  = n_distinct(df_dt_u65$hospitalization_id),
            warnings    = paste(sa_dt_u65_warnings, collapse = "; ")),
-  "models/a3", "SA_age65_A3_dt_coefs.csv"
+  "A3_tte_outcomes/models", "SA_age65_A3_dt_coefs.csv"
 )
 
 export_csv(
@@ -2017,7 +2253,7 @@ export_csv(
            subgroup    = "age_lt65",
            n_subgroup  = n_distinct(df_cox_u65$hospitalization_id),
            warnings    = paste(fit_cox_u65_warnings, collapse = "; ")),
-  "models/a3", "SA_age65_A3_cox_coefs.csv"
+  "A3_tte_outcomes/models", "SA_age65_A3_cox_coefs.csv"
 )
 
 export_csv(
@@ -2026,17 +2262,17 @@ export_csv(
            subgroup    = "age_lt65",
            n_subgroup  = nrow(df_fg_u65),
            warnings    = paste(fit_fg_u65_warnings, collapse = "; ")),
-  "models/a3", "SA_age65_A3_fg_coefs.csv"
+  "A3_tte_outcomes/models", "SA_age65_A3_fg_coefs.csv"
 )
 
 export_csv(
   cif_data_u65 %>% mutate(subgroup = "age_lt65"),
-  "models/a3", "SA_age65_A3_fg_cumulative_incidence.csv"
+  "A3_tte_outcomes/models", "SA_age65_A3_fg_cumulative_incidence.csv"
 )
 
 export_csv(
   cif_data_u65 %>% mutate(subgroup = "age_lt65"),   # figure-ready copy, mirrors Section 3.6
-  "figures/a3", "SA_age65_A3_fig_cif_curves.csv"
+  "A3_tte_outcomes/figures", "SA_age65_A3_fig_cif_curves.csv"
 )
 
 export_csv(
@@ -2048,7 +2284,7 @@ export_csv(
       mutate(model = "SA_age65_A4_part2_VFD_survivors", part = "Part2_VFD_survivors",
              warnings = paste(sa_a4p2_u65_warnings, collapse = "; "))
   ) %>% mutate(subgroup = "age_lt65", n_subgroup = nrow(df_a4_u65)),
-  "models/a4", "SA_age65_A4_coefs.csv"
+  "A4_VFD_outcomes/models", "SA_age65_A4_coefs.csv"
 )
 
 export_csv(
@@ -2060,10 +2296,169 @@ export_csv(
       mutate(model = "SA_age65_A5_mortality_logistic", outcome = "mortality",
              warnings = paste(sa_a5mort_u65_warnings, collapse = "; "))
   ) %>% mutate(subgroup = "age_lt65", n_subgroup = nrow(df_a5_u65)),
-  "models/a5", "SA_age65_A5_coefs.csv"
+  "A5_mort_outcomes/models", "SA_age65_A5_coefs.csv"
 )
 
 cat("SA_age65 outputs exported.\n\n")
+
+# =============================================================================
+# SECTION 7: ADJUSTMENT COMPARISON FIGURE
+# Mirrors: Figure 2, Plotkin et al., JAMA Health Forum 2024
+#   (DOI:10.1001/jamahealthforum.2024.0636)
+#
+# Assembles the adjustment comparison figure from patient-only GLM estimates
+# already fitted and exported in sections 3.7, 4.6, and 5.5, alongside the
+# primary GLMM estimates from sections 3.2, 4.1/4.2, and 5.1/5.2.
+# No models are fitted here -- this section is figure assembly only.
+#
+# For A4 Part 2 and A5 LOS, the patient-only series uses standard NB
+# (MASS::glm.nb) rather than zero-truncated NB (GLM family limitation);
+# this is noted in the exported CSVs via the model_type column.
+#
+# For single-hospital sites, both series reflect GLM estimates (identical).
+# =============================================================================
+
+cat("============================================================\n")
+cat("SECTION 7: Adjustment Comparison Figure (assembly only)\n")
+cat("============================================================\n\n")
+
+# ---------------------------------------------------------------------------
+# 7.1 ASSEMBLE COMPARISON PLOT DATA
+# ---------------------------------------------------------------------------
+# Patient-only tidy objects: tidy_dt_nore, tidy_a4p1_nore, tidy_a4p2_nore,
+#   tidy_a5los_nore, tidy_a5mort_nore  (fitted in sections 3.7, 4.6, 5.5)
+# GLMM tidy objects: tidy_dt_primary, tidy_a4p1, tidy_a4p2,
+#   tidy_a5_los, tidy_a5_mort  (fitted in sections 3.2, 4.1, 4.2, 5.1, 5.2)
+
+cat("-- 7.1 Assembling comparison plot data\n\n")
+
+outcome_levels <- c(
+  "A3: Extubation\n(Disc-Time OR)",
+  "A4: Alive 28d\n(OR)",
+  "A4: VFDs\n(IRR*)",
+  "A5: ICU LOS\n(IRR*)",
+  "A5: Mortality\n(OR)"
+)
+
+pull_exposure <- function(tidy_df, outcome_label, adjust_label,
+                          sat_pattern = "SAT", sbt_pattern = "SBT") {
+  tidy_df %>%
+    filter(str_detect(term, sat_pattern) | str_detect(term, sbt_pattern)) %>%
+    mutate(
+      outcome   = outcome_label,
+      adjust    = adjust_label,
+      trial     = if_else(str_detect(term, sat_pattern), "SAT", "SBT"),
+      outcome_f = factor(outcome_label, levels = outcome_levels)
+    ) %>%
+    select(trial, outcome, outcome_f, adjust, estimate, conf.low, conf.high)
+}
+
+nore_rows <- bind_rows(
+  pull_exposure(tidy_dt_nore,    outcome_levels[1], "Patient-adjusted",
+                sat_pattern = "SAT_delivered", sbt_pattern = "SBT_delivered"),
+  pull_exposure(tidy_a4p1_nore,  outcome_levels[2], "Patient-adjusted"),
+  pull_exposure(tidy_a4p2_nore,  outcome_levels[3], "Patient-adjusted"),
+  pull_exposure(tidy_a5los_nore, outcome_levels[4], "Patient-adjusted"),
+  pull_exposure(tidy_a5mort_nore,outcome_levels[5], "Patient-adjusted")
+)
+
+glmm_rows <- bind_rows(
+  pull_exposure(tidy_dt_primary, outcome_levels[1],
+                "Patient- and hospital-adjusted",
+                sat_pattern = "SAT_delivered", sbt_pattern = "SBT_delivered"),
+  pull_exposure(tidy_a4p1,       outcome_levels[2],
+                "Patient- and hospital-adjusted"),
+  pull_exposure(tidy_a4p2,       outcome_levels[3],
+                "Patient- and hospital-adjusted"),
+  pull_exposure(tidy_a5_los,     outcome_levels[4],
+                "Patient- and hospital-adjusted"),
+  pull_exposure(tidy_a5_mort,    outcome_levels[5],
+                "Patient- and hospital-adjusted")
+)
+
+adj_comp_data <- bind_rows(nore_rows, glmm_rows) %>%
+  mutate(
+    adjust_f = factor(adjust,
+                      levels = c("Patient-adjusted",
+                                 "Patient- and hospital-adjusted"))
+  )
+
+export_csv(adj_comp_data, "diagnostics", "fig_adj_comparison_data.csv")
+
+# ---------------------------------------------------------------------------
+# 7.2 ADJUSTMENT COMPARISON FIGURE
+# ---------------------------------------------------------------------------
+
+cat("-- 7.2 Building adjustment comparison figure\n\n")
+
+clr_pt_only <- JAMA_COLORS[1]
+clr_pt_hosp <- JAMA_COLORS[2]
+
+adj_shapes <- c("Patient-adjusted"               = 16L,
+                "Patient- and hospital-adjusted"  = 15L)
+adj_colors <- c("Patient-adjusted"               = clr_pt_only,
+                "Patient- and hospital-adjusted"  = clr_pt_hosp)
+
+dodge_w <- 0.35
+
+fig_adj_comparison <- ggplot(
+    adj_comp_data,
+    aes(x     = outcome_f,
+        y     = estimate,
+        ymin  = conf.low,
+        ymax  = conf.high,
+        color = adjust_f,
+        shape = adjust_f,
+        group = adjust_f)
+  ) +
+  geom_hline(yintercept = 1, linetype = "dashed",
+             color = "gray55", linewidth = 0.6) +
+  geom_line(aes(group = adjust_f),
+            position = position_dodge(width = dodge_w),
+            linewidth = 0.55, alpha = 0.7) +
+  geom_errorbar(width = 0.18, linewidth = 0.7,
+                position = position_dodge(width = dodge_w)) +
+  geom_point(size = 3.5,
+             position = position_dodge(width = dodge_w)) +
+  scale_color_manual(values = adj_colors, name = NULL) +
+  scale_shape_manual(values = adj_shapes, name = NULL) +
+  scale_y_log10(
+    breaks = c(0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0),
+    labels = c("0.50", "0.75", "1.00", "1.25", "1.50", "2.00", "3.00")
+  ) +
+  facet_wrap(~ trial, ncol = 2, labeller = labeller(
+    trial = c(SAT = "SAT (Spontaneous Awakening Trial)",
+              SBT = "SBT (Spontaneous Breathing Trial)")
+  )) +
+  labs(
+    title    = "Effect Estimates by Adjustment Level Across All Primary Outcomes",
+    subtitle = "Patient-adjusted (GLM) vs. patient- and hospital-adjusted (GLMM with hospital random intercept)",
+    x        = NULL,
+    y        = "Effect Estimate (OR or IRR; log scale)",
+    caption  = paste0(
+      "* IRR for A4 VFDs and A5 ICU LOS. Patient-only series uses standard NB (MASS::glm.nb)",
+      " as approximation for ZTNB; see A4_patient_only_coefs.csv and A5_patient_only_coefs.csv.\n",
+      "Dashed line = null (reference = 1). Error bars = 95% CI (Wald for GLM; profile for GLMM).\n",
+      if (single_hospital)
+        "NOTE: Single-hospital site -- hospital RE not estimable; both series reflect GLM estimates (identical).\n"
+      else
+        paste0("Hospital RE included in patient+hospital model | n_hospitals = ", n_hospitals, ".\n"),
+      "Reference: Plotkin et al., JAMA Health Forum 2024 (DOI:10.1001/jamahealthforum.2024.0636)."
+    )
+  ) +
+  theme_abtrise() +
+  theme(
+    legend.position  = "bottom",
+    legend.key.size  = unit(0.9, "lines"),
+    axis.text.x      = element_text(size = 8, lineheight = 0.9),
+    panel.grid.minor = element_blank(),
+    strip.text       = element_text(face = "bold", size = 10)
+  )
+
+export_png(fig_adj_comparison, "diagnostics", "fig_adj_comparison.png",
+           width = 13, height = 6)
+
+cat("  Adjustment comparison figure exported.\n\n")
 
 # =============================================================================
 # SESSION INFO
