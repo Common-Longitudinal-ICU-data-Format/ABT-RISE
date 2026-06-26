@@ -20,7 +20,7 @@
 # =============================================================================
 
 # --- Load setup
-source(here::here("ABTRISE_01_setup_c.R"))
+source(here::here("code", "ABTRISE_01_setup_c.R"))
 
 cat("============================================================\n")
 cat("ANALYSIS 2: Criterion Validity\n")
@@ -1448,12 +1448,17 @@ eligible_sbt <- if (!is.null(a2_sbt_results)) {
 } else NULL
 
 # Build comparison table
+# eligible_sat / eligible_sbt are NULL when that trial has no flowsheet data at
+# this site (e.g. MIMIC documents SBT only). Guard the select() so a NULL trial
+# is dropped from the comparison rather than erroring; bind_rows() skips NULLs.
+.denom_cols <- c("trial", "denominator", "n_days", "TP", "TN", "FP", "FN",
+                 "sensitivity", "specificity", "PPV", "NPV", "F1", "MCC", "kappa")
+.pick_denom <- function(x) if (is.null(x)) NULL else x %>% select(all_of(.denom_cols))
+
 denom_compare <- bind_rows(
-  eligible_sat %>% select(trial, denominator, n_days, TP, TN, FP, FN,
-                           sensitivity, specificity, PPV, NPV, F1, MCC, kappa),
+  .pick_denom(eligible_sat),
   allday_sat,
-  eligible_sbt %>% select(trial, denominator, n_days, TP, TN, FP, FN,
-                           sensitivity, specificity, PPV, NPV, F1, MCC, kappa),
+  .pick_denom(eligible_sbt),
   allday_sbt
 ) %>%
   arrange(trial, denominator)
