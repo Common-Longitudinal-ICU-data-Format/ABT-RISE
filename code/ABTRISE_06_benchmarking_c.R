@@ -13,17 +13,20 @@
 #   Setup runs automatically -- do NOT run ABTRISE_01_setup.R separately first.
 #
 # WHAT THIS SCRIPT PRODUCES:
-#   outputs/models/a6/    A6_SAT_glmm_coefs.csv, A6_SBT_glmm_coefs.csv,
-#                         A6_re_variance_mor.csv, A6_blups_risk_adj_rates.csv,
-#                         A6_icc_patient_diagnostic.csv,
-#                         A6_hospital_aggregate_summary.csv  [CC pooled model input]
-#                         A6_SAT_ccc_results.csv, A6_SBT_ccc_results.csv [if flowsheet]
-#                         A6_fit_*.rds
-#   outputs/figures/a6/   fig_A6_SAT_caterpillar.png, fig_A6_SBT_caterpillar.png,
-#                         fig_A6_SAT_funnel.png, fig_A6_SBT_funnel.png,
-#                         A6_*_caterpillar_data.csv, A6_*_funnel_limits_data.csv,
-#                         A6_*_bland_altman_data.csv [if flowsheet]
-#   outputs/diagnostics/  session_info_a6.txt (updated exclusion waterfall)
+#   outputs/A6_benchmark_outcomes/models/   A6_SAT_glmm_coefs.csv, A6_SBT_glmm_coefs.csv,
+#                                          A6_re_variance_mor.csv, A6_blups_risk_adj_rates.csv,
+#                                          A6_icc_patient_diagnostic.csv,
+#                                          A6_hospital_aggregate_summary.csv,
+#                                          A6_SAT_ccc_results.csv, A6_SBT_ccc_results.csv [if flowsheet]
+#                                          A6_fit_*.rds
+#   outputs/A6_benchmark_outcomes/figures/  fig_A6_SAT_caterpillar.png, fig_A6_SBT_caterpillar.png,
+#                                          fig_A6_SAT_funnel.png, fig_A6_SBT_funnel.png,
+#                                          fig_A6_SAT_ranked_hospitals.png, fig_A6_SBT_ranked_hospitals.png,
+#                                          A6_*_caterpillar_data.csv, A6_*_funnel_limits_data.csv,
+#                                          A6_*_ranked_hospitals_data.csv,
+#                                          A6_*_bland_altman_data.csv [if flowsheet]
+#   outputs/diagnostics/                   fig_consort_file1.png, fig_consort_file2.png,
+#                                          session_info_a6.txt, exclusion_waterfall.csv
 #
 # ANALYSIS 6 DESIGN NOTES:
 #   - Two separate GLMMs: SAT delivery and SBT delivery (eligible vent-days)
@@ -50,21 +53,6 @@ cat("============================================================\n")
 cat("ANALYSIS 6: Hospital Benchmarking (Risk-Adjusted Delivery Rates)\n")
 cat("============================================================\n\n")
 
-# DESIGN NOTES (see script header for full rationale):
-#   - Two separate GLMMs: SAT delivery | SBT delivery
-#   - Unit of analysis: eligible vent-day (one row per eligible day)
-#   - Outcome: delivered (0/1) among eligible days
-#   - Covariates: age, sex, CCI, SOFA_prior, FiO2_prior, PEEP_prior,
-#                 sedation_prior, NEE_prior (binary), hospital_type, location_type
-#   - Random intercept: (1|hospital_id) -- suppressed for single-hospital sites
-#   - 2-level model only (vent-days within hospitals); patient RE omitted
-#     for consistency with A3–A5
-#   - ICC(patient) computed as diagnostic from residuals -- always exported
-#   - Dual output tracks:
-#       Track 1 (local GLMM): coefficients + BLUPs + MOR/VPC -- multi-hospital only
-#       Track 2 (CC aggregate): hospital summary CSV -- always exported
-#   - CCC + Bland-Altman: gated on site_has_flowsheet_sat / _sbt
-#     minimum 3 flowsheet hospitals required to run
 
 # ---------------------------------------------------------------------------
 # 6.0 BUILD ANALYSIS 6 DATASETS
@@ -80,8 +68,7 @@ cat("-- 6.0 Building Analysis 6 datasets\n\n")
 # and available via source(). Reproduced here for reference only:
 #   covariates_a6 <- c("age", "sex", "CCI",
 #                      "SOFA_prior", "FiO2_prior", "PEEP_prior",
-#                      "sedation_prior", "NEE_prior",
-#                      "hospital_type", "location_type")
+#                      "sedation_prior", "NEE_prior")
 
 # --- A6 SAT dataset: eligible SAT days, complete case ----------------------
 df_a6_sat <- df_pp %>%
@@ -91,7 +78,7 @@ df_a6_sat <- df_pp %>%
     !is.na(age), !is.na(sex), !is.na(CCI),
     !is.na(SOFA_prior), !is.na(FiO2_prior), !is.na(PEEP_prior),
     !is.na(sedation_prior),
-    !is.na(hospital_type), !is.na(location_type)
+  
     # NEE_prior: binary-recoded in Section 2.4 (NA=0) -- no NA filter needed
   ) %>%
   mutate(delivered = as.integer(SAT_delivered_primary))
@@ -104,7 +91,7 @@ df_a6_sbt <- df_pp %>%
     !is.na(age), !is.na(sex), !is.na(CCI),
     !is.na(SOFA_prior), !is.na(FiO2_prior), !is.na(PEEP_prior),
     !is.na(sedation_prior),
-    !is.na(hospital_type), !is.na(location_type)
+
   ) %>%
   mutate(delivered = as.integer(SBT_delivered_2min))
 
@@ -297,9 +284,6 @@ run_a6_glmm <- function(trial_label, data) {
 
   # --- ICC(patient) diagnostic -----------------------------------------------
   # Computed from model residuals using the latent variable approach:
-  # ICC(patient) approx = variance explained by patient / total variance
-  # Estimated via pearson residual variance partitioned by patient
-  # This is a diagnostic only -- no modeling decision made at site level
   # CC reviews across sites to assess whether 3-level model is warranted
 
   cat("  Computing ICC(patient) diagnostic...\n")
@@ -407,8 +391,8 @@ build_hosp_summary <- function(trial_label, data, raw_rate_col = "delivered") {
       sedation_prior_pct = round(mean(sedation_prior, na.rm = TRUE) * 100, 1),
       NEE_prior_pct      = round(mean(NEE_prior,      na.rm = TRUE) * 100, 1),
       # Fixed hospital-level characteristics (should be constant within hospital)
-      hospital_type      = first(as.character(hospital_type)),
-      location_type      = first(as.character(location_type)),
+     # hospital_type      = first(as.character(hospital_type)),
+      #location_type      = first(as.character(location_type)),
       .groups            = "drop"
     ) %>%
     mutate(single_hospital_site = single_hospital)
@@ -432,8 +416,6 @@ cat("\n")
 # Runs only at sites with flowsheet data AND >= 3 hospitals with flowsheet
 # Compares algorithm delivery RATE per hospital vs. flowsheet delivery RATE
 # This is the hospital-level agreement analysis (distinct from day-level A2)
-# CCC: Lin's concordance correlation -- captures correlation + absolute agreement
-# Bland-Altman: reveals systematic bias (algorithm consistently over/underestimates)
 
 cat("-- 6.4 CCC + Bland-Altman: EHR vs. flowsheet agreement\n\n")
 
@@ -586,7 +568,7 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
         "(Rogers et al. 2013).\n",
         "CIs reflect conditional variance of random effects (postVar).\n",
         "Hospital labels de-identified -- H1 = lowest, H",
-        nrow(blup_plot), " = highest rate."
+        nrow(blup_plot), " = highest rate.\n"
       )
     ) +
     theme_abtrise()
@@ -637,14 +619,111 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
         "Points outside control limits are statistical outliers.\n",
         "Small hospitals naturally show wider scatter -- compare with\n",
         "caterpillar plot (BLUP-shrunk estimates) for full picture.\n",
-        "Spiegelhalter (Stat Med 2005)."
+        "Spiegelhalter (Stat Med 2005).\n"
       )
     ) +
     theme_abtrise()
 
-  list(caterpillar = fig_cat, funnel = fig_funnel,
+  # --- Hospital ranking figure (vertical caterpillar) -------------------------
+  # Style: ranked-hospital dot plot, colored by hospital type.
+  # Mirrors: Figure 3, Valk et al., Critical Care Medicine (proning study).
+  # X-axis: hospitals ranked by raw delivery rate (integer rank labels hidden;
+  #         de-identified to H1...Hn). Y-axis: raw delivery rate with Wilson CI.
+  # Color: hospital_type (academic / community / other) from df_pp.
+  # Gated on multi-hospital sites and n_delivered > 0 (CI undefined at n=0).
+
+  # Wilson CI helper (base R -- no new packages)
+  wilson_ci <- function(x, n, conf = 0.95) {
+    z  <- qnorm(1 - (1 - conf) / 2)
+    p  <- x / n
+    cn <- (p + z^2 / (2*n)) / (1 + z^2/n)
+    mg <- z * sqrt(p*(1-p)/n + z^2/(4*n^2)) / (1 + z^2/n)
+    list(lo = pmax(0, cn - mg), hi = pmin(1, cn + mg))
+  }
+
+  # Join hospital_type from df_pp (available in global scope from setup)
+  hosp_type_lkp <- df_pp %>%
+    group_by(hospital_id) %>%
+    summarise(hospital_type = first(as.character(hospital_type)),
+              .groups = "drop")
+
+  ranking_data <- blup_df %>%
+    left_join(hosp_type_lkp, by = "hospital_id") %>%
+    mutate(
+      hospital_type = replace_na(hospital_type, "Unknown"),
+      rank          = rank(raw_rate, ties.method = "first"),
+      hosp_label    = paste0("H", rank)
+    ) %>%
+    filter(!is.na(n_delivered), n_eligible > 0) %>%
+    mutate(
+      ci_lo = wilson_ci(n_delivered, n_eligible)$lo,
+      ci_hi = wilson_ci(n_delivered, n_eligible)$hi
+    )
+
+  # Hospital type color scale: reuse JAMA palette subsets without touching
+  # clr_sat / clr_sbt (trial colors). Academic=red, Community=blue, Other=gray.
+  hosp_type_vals <- c(
+    "Academic" = JAMA_COLORS[4],  # muted red
+    "Community"= JAMA_COLORS[3],  # JAMA blue
+    "Unknown"  = JAMA_COLORS[7],  # warm gray
+    "Other"    = JAMA_COLORS[7]
+  )
+
+  fig_ranking <- ggplot(
+      ranking_data,
+      aes(x = rank, y = raw_rate, ymin = ci_lo, ymax = ci_hi,
+          color = hospital_type)
+    ) +
+    geom_hline(yintercept = mean(ranking_data$raw_rate, na.rm = TRUE),
+               linetype = "dashed", color = "gray45", linewidth = 0.55) +
+    geom_errorbar(width = 0.3, linewidth = 0.7, alpha = 0.6) +
+    geom_point(size = 3, alpha = 0.9) +
+    scale_x_continuous(
+      breaks  = ranking_data$rank,
+      labels  = ranking_data$hosp_label,
+      expand  = expansion(add = 0.8)
+    ) +
+    scale_y_continuous(
+      labels = scales::percent_format(accuracy = 1),
+      limits = c(0, 1),
+      expand = expansion(mult = c(0, 0.04))
+    ) +
+    scale_color_manual(
+      values = hosp_type_vals,
+      name   = "Hospital Type",
+      na.value = JAMA_COLORS[7]
+    ) +
+    labs(
+      title    = paste0(trial_label,
+                        " Delivery: Hospitals Ranked by Raw Delivery Rate"),
+      subtitle = paste0(
+        "Error bars = 95% Wilson CI  |  Dashed line = consortium mean  |  ",
+        "n = ", nrow(ranking_data), " hospitals"
+      ),
+      x        = paste0("Hospitals\nRanked by ", trial_label,
+                        " Raw Delivery Rate"),
+      y        = paste0("% Eligible Days With ", trial_label, " Delivered"),
+      caption  = paste0(
+        "Hospital labels de-identified (H1 = lowest, H",
+        nrow(ranking_data), " = highest raw rate).\n",
+        "Wilson 95% CI from raw eligible-day counts.\n",
+        "Hospital type from site data -- may be unlabeled if not captured.\n",
+        "Reference: Valk et al. (proning study figure style)."
+      )
+    ) +
+    theme_abtrise() +
+    theme(
+      legend.position  = "top",
+      axis.text.x      = element_text(size = 7, angle = 45, hjust = 1),
+      panel.grid.minor = element_blank()
+    )
+
+  list(caterpillar    = fig_cat,
+       funnel         = fig_funnel,
+       ranking        = fig_ranking,
        blup_plot_data = blup_plot,
-       funnel_limits  = funnel_limits)
+       funnel_limits  = funnel_limits,
+       ranking_data   = ranking_data)
 }
 
 figs_sat <- build_a6_figures("SAT", a6_sat$blups, a6_sat$re_stats)
@@ -659,75 +738,92 @@ cat("-- 6.6 Exporting Analysis 6 outputs\n\n")
 # --- Track 1: Local GLMM outputs -------------------------------------------
 
 # Fixed effect coefficients
-export_csv(a6_sat$tidy, "models/a6", "A6_SAT_glmm_coefs.csv")
-export_csv(a6_sbt$tidy, "models/a6", "A6_SBT_glmm_coefs.csv")
+export_csv(a6_sat$tidy, "A6_benchmark_outcomes/models", "A6_SAT_glmm_coefs.csv")
+export_csv(a6_sbt$tidy, "A6_benchmark_outcomes/models", "A6_SBT_glmm_coefs.csv")
 
 # RE variance, VPC/ICC, MOR
 export_csv(
   bind_rows(a6_sat$re_stats, a6_sbt$re_stats),
-  "models/a6", "A6_re_variance_mor.csv"
+  "A6_benchmark_outcomes/models", "A6_re_variance_mor.csv"
 )
 
 # BLUPs and risk-adjusted rates
 export_csv(
   bind_rows(a6_sat$blups, a6_sbt$blups),
-  "models/a6", "A6_blups_risk_adj_rates.csv"
+  "A6_benchmark_outcomes/models", "A6_blups_risk_adj_rates.csv"
 )
 
 # ICC(patient) diagnostics
 export_csv(
   bind_rows(a6_sat$icc_patient, a6_sbt$icc_patient),
-  "models/a6", "A6_icc_patient_diagnostic.csv"
+  "A6_benchmark_outcomes/models", "A6_icc_patient_diagnostic.csv"
 )
 
 # RDS model objects
-export_rds(a6_sat$fit, "models/a6", "A6_fit_SAT_glmm.rds")
-export_rds(a6_sbt$fit, "models/a6", "A6_fit_SBT_glmm.rds")
+export_rds(a6_sat$fit, "A6_benchmark_outcomes/models", "A6_fit_SAT_glmm.rds")
+export_rds(a6_sbt$fit, "A6_benchmark_outcomes/models", "A6_fit_SBT_glmm.rds")
 
 # --- Track 2: Hospital aggregate summary (CC pooled model input) -----------
-export_csv(hosp_summary_all, "models/a6", "A6_hospital_aggregate_summary.csv")
+export_csv(hosp_summary_all, "A6_benchmark_outcomes/models", "A6_hospital_aggregate_summary.csv")
+
+# SA: Hospital aggregate summary split by age group (<65 vs >=65)
+hosp_summary_age_split <- bind_rows(
+  build_hosp_summary("SAT", df_a6_sat %>% filter(age <  65)) %>% mutate(age_group = "age_u65"),
+  build_hosp_summary("SAT", df_a6_sat %>% filter(age >= 65)) %>% mutate(age_group = "age_ge65"),
+  build_hosp_summary("SBT", df_a6_sbt %>% filter(age <  65)) %>% mutate(age_group = "age_u65"),
+  build_hosp_summary("SBT", df_a6_sbt %>% filter(age >= 65)) %>% mutate(age_group = "age_ge65")
+)
+export_csv(hosp_summary_age_split, "A6_benchmark_outcomes/models", "SA_age_split_A6_hospital_aggregate_summary.csv")
 
 # --- CCC + Bland-Altman ----------------------------------------------------
 if (!is.null(a6_ccc_sat)) {
   export_csv(bind_rows(a6_ccc_sat$ccc),
-             "models/a6", "A6_SAT_ccc_results.csv")
+             "A6_benchmark_outcomes/models", "A6_SAT_ccc_results.csv")
   export_csv(a6_ccc_sat$ba_data,
-             "figures/a6", "A6_SAT_bland_altman_data.csv")
+             "A6_benchmark_outcomes/figures", "A6_SAT_bland_altman_data.csv")
   export_csv(a6_ccc_sat$hosp_rates,
-             "figures/a6", "A6_SAT_hosp_rates_comparison.csv")
+             "A6_benchmark_outcomes/figures", "A6_SAT_hosp_rates_comparison.csv")
 }
 
 if (!is.null(a6_ccc_sbt)) {
   export_csv(bind_rows(a6_ccc_sbt$ccc),
-             "models/a6", "A6_SBT_ccc_results.csv")
+             "A6_benchmark_outcomes/models", "A6_SBT_ccc_results.csv")
   export_csv(a6_ccc_sbt$ba_data,
-             "figures/a6", "A6_SBT_bland_altman_data.csv")
+             "A6_benchmark_outcomes/figures", "A6_SBT_bland_altman_data.csv")
   export_csv(a6_ccc_sbt$hosp_rates,
-             "figures/a6", "A6_SBT_hosp_rates_comparison.csv")
+             "A6_benchmark_outcomes/figures", "A6_SBT_hosp_rates_comparison.csv")
 }
 
 # --- Figure exports and figure data CSVs for CC reconstruction -------------
 
 if (!is.null(figs_sat)) {
-  export_png(figs_sat$caterpillar, "figures/a6",
+  export_png(figs_sat$caterpillar, "A6_benchmark_outcomes/figures",
              "fig_A6_SAT_caterpillar.png", width = 9, height = 7)
-  export_png(figs_sat$funnel, "figures/a6",
+  export_png(figs_sat$funnel, "A6_benchmark_outcomes/figures",
              "fig_A6_SAT_funnel.png", width = 8, height = 6)
-  export_csv(figs_sat$blup_plot_data, "figures/a6",
+  export_png(figs_sat$ranking, "A6_benchmark_outcomes/figures",
+             "fig_A6_SAT_ranked_hospitals.png", width = 10, height = 6)
+  export_csv(figs_sat$blup_plot_data, "A6_benchmark_outcomes/figures",
              "A6_SAT_caterpillar_data.csv")
-  export_csv(figs_sat$funnel_limits,  "figures/a6",
+  export_csv(figs_sat$funnel_limits,  "A6_benchmark_outcomes/figures",
              "A6_SAT_funnel_limits_data.csv")
+  export_csv(figs_sat$ranking_data,   "A6_benchmark_outcomes/figures",
+             "A6_SAT_ranked_hospitals_data.csv")
 }
 
 if (!is.null(figs_sbt)) {
-  export_png(figs_sbt$caterpillar, "figures/a6",
+  export_png(figs_sbt$caterpillar, "A6_benchmark_outcomes/figures",
              "fig_A6_SBT_caterpillar.png", width = 9, height = 7)
-  export_png(figs_sbt$funnel, "figures/a6",
+  export_png(figs_sbt$funnel, "A6_benchmark_outcomes/figures",
              "fig_A6_SBT_funnel.png", width = 8, height = 6)
-  export_csv(figs_sbt$blup_plot_data, "figures/a6",
+  export_png(figs_sbt$ranking, "A6_benchmark_outcomes/figures",
+             "fig_A6_SBT_ranked_hospitals.png", width = 10, height = 6)
+  export_csv(figs_sbt$blup_plot_data, "A6_benchmark_outcomes/figures",
              "A6_SBT_caterpillar_data.csv")
-  export_csv(figs_sbt$funnel_limits,  "figures/a6",
+  export_csv(figs_sbt$funnel_limits,  "A6_benchmark_outcomes/figures",
              "A6_SBT_funnel_limits_data.csv")
+  export_csv(figs_sbt$ranking_data,   "A6_benchmark_outcomes/figures",
+             "A6_SBT_ranked_hospitals_data.csv")
 }
 
 # Raw delivery rates by hospital -- for CC figure overlay if needed
@@ -744,7 +840,7 @@ export_csv(
                 n_delivered = sum(delivered),
                 raw_rate = mean(delivered), .groups = "drop")
   ),
-  "figures/a6", "A6_raw_rates_by_hospital.csv"
+  "A6_benchmark_outcomes/figures", "A6_raw_rates_by_hospital.csv"
 )
 
 # --- Updated waterfall with A6 complete case steps -------------------------
@@ -766,186 +862,350 @@ cat("\nAnalysis 6 complete.\n\n")
 #   install.packages("consort")
 # =============================================================================
 
-cat("-- Building CONSORT diagrams\n")
+# =============================================================================
+# CONSORT / STUDY FLOW DIAGRAMS (ggplot2 implementation)
+# =============================================================================
+# Built here because all waterfall steps are now complete.
+# Style: main flow boxes (white/light, dark border) + exclusion side bars
+# (JAMA blue filled, white text), placed left of the main flow.
+# Mirrors the visual convention of: Rotta et al., BMC Health Services Research
+# 2022 (DOI:10.1186/s12913-022-07467-8), Figure 1.
+#
+# Replaces the consort-package approach (removed) with a self-contained
+# ggplot2 function. No additional packages required beyond those already loaded.
+#
+# draw_consort_gg():
+#   steps: named list of lists, each with:
+#     $main_txt:  character -- main box text
+#     $excl_txt:  character or NULL -- exclusion left-bar text
+#     $split_txts: character vector or NULL -- if provided, the final main box
+#                  splits into N equal-width child boxes at the bottom
+# =============================================================================
 
-if (!requireNamespace("consort", quietly = TRUE)) {
-  cat("  NOTE: consort package not installed. Skipping CONSORT diagrams.\n")
-  cat("  Install with: install.packages('consort')\n\n")
-} else {
+cat("-- Building CONSORT diagrams (ggplot2, blue exclusion bars)\n")
 
-  library(consort)
+draw_consort_gg <- function(steps, title_txt = NULL) {
 
-  wf <- waterfall
+  # --- Layout constants -------------------------------------------------------
+  # Main flow: centered at x = 0.62; exclusion bars: centered at x = 0.18
+  main_cx  <- 0.62;  main_bw  <- 0.40;  main_bh  <- 0.085
+  excl_cx  <- 0.18;  excl_bw  <- 0.30;  excl_bh  <- 0.070
+  arrow_col <- "gray40"
 
-  # ── Helper: safely pull values from waterfall ────────────────────────────
-  pull_n <- function(step_name, file_name) {
-    x <- wf %>%
-      filter(step == step_name, file == file_name) %>%
-      pull(n_remaining)
-    if (length(x) == 0) return(NA_integer_)
-    as.integer(x[1])
+  n_main_steps <- sum(sapply(steps, function(s) is.null(s$split_txts)))
+  n_total      <- length(steps)
+  has_split    <- !is.null(steps[[n_total]]$split_txts)
+
+  # Y positions for main boxes (top to bottom), leaving room for split row
+  split_y_top <- 0.09
+  y_tops <- seq(0.96,
+                ifelse(has_split, split_y_top + main_bh + 0.05, 0.09),
+                length.out = ifelse(has_split, n_total - 1, n_total))
+
+  # --- Accumulate geom data --------------------------------------------------
+  df_main   <- tibble()
+  df_excl   <- tibble()
+  df_segs   <- tibble()
+  df_split  <- tibble()
+
+  for (i in seq_along(y_tops)) {
+    step <- steps[[i]]
+    cy   <- y_tops[i] - main_bh / 2
+
+    df_main <- bind_rows(df_main,
+      tibble(xmin = main_cx - main_bw/2, xmax = main_cx + main_bw/2,
+             ymin = cy - main_bh/2,      ymax = cy + main_bh/2,
+             cx = main_cx, cy = cy, txt = step$main_txt))
+
+    # Downward connector to next step (or to split bar)
+    next_top_y <- if (i < length(y_tops)) {
+      y_tops[i+1] - main_bh / 2 + main_bh / 2   # top of next main box
+    } else if (has_split) {
+      split_y_top + main_bh   # top of split row
+    } else NULL
+
+    if (!is.null(next_top_y)) {
+      df_segs <- bind_rows(df_segs,
+        tibble(x = main_cx, xend = main_cx,
+               y = cy - main_bh/2,       # bottom of this box
+               yend = next_top_y,
+               seg_type = "main_flow"))
+    }
+
+    # Exclusion side bar + horizontal connector
+    if (!is.null(step$excl_txt)) {
+      excl_cy <- cy
+      df_excl <- bind_rows(df_excl,
+        tibble(xmin = excl_cx - excl_bw/2, xmax = excl_cx + excl_bw/2,
+               ymin = excl_cy - excl_bh/2, ymax = excl_cy + excl_bh/2,
+               cx = excl_cx, cy = excl_cy, txt = step$excl_txt))
+      # Horizontal connector: left edge of main box → right edge of excl bar
+      df_segs <- bind_rows(df_segs,
+        tibble(x = main_cx - main_bw/2, xend = excl_cx + excl_bw/2,
+               y = excl_cy,             yend = excl_cy,
+               seg_type = "excl_horiz"))
+    }
   }
 
-  pull_excl <- function(step_name, file_name) {
-    x <- wf %>%
-      filter(step == step_name, file == file_name) %>%
-      pull(n_excluded)
-    if (length(x) == 0) return(NA_integer_)
-    as.integer(x[1])
+  # --- Split row --------------------------------------------------------------
+  if (has_split) {
+    split_txts <- steps[[n_total]]$split_txts
+    n_split    <- length(split_txts)
+    split_bw   <- min(0.30, 0.80 / n_split)
+    split_cy   <- split_y_top + main_bh / 2
+    split_xs   <- seq(0.22, 0.96, length.out = n_split)
+
+    for (j in seq_len(n_split)) {
+      df_split <- bind_rows(df_split,
+        tibble(xmin = split_xs[j] - split_bw/2,
+               xmax = split_xs[j] + split_bw/2,
+               ymin = split_cy - main_bh/2,
+               ymax = split_cy + main_bh/2,
+               cx   = split_xs[j], cy = split_cy,
+               txt  = split_txts[j]))
+    }
+
+    # Horizontal span bar connecting all split boxes
+    span_y <- split_y_top + main_bh + 0.02
+    df_segs <- bind_rows(df_segs,
+      tibble(x = split_xs[1], xend = split_xs[n_split],
+             y = span_y, yend = span_y, seg_type = "split_span"))
+    # Vertical drops from span bar to each split box top
+    for (j in seq_len(n_split)) {
+      df_segs <- bind_rows(df_segs,
+        tibble(x = split_xs[j], xend = split_xs[j],
+               y = span_y, yend = split_cy + main_bh/2,
+               seg_type = "split_drop"))
+    }
   }
 
-  # ── FILE 1 NUMBERS ────────────────────────────────────────────────────────
-  f1_raw        <- pull_n("1_raw_load",                        "File1")
-  f1_n_imp_excl <- pull_excl("3_data_coding_error_exclusion",  "File1")
-  f1_post_imp   <- pull_n("3_data_coding_error_exclusion",     "File1")
-  f1_n_vd_excl  <- pull_excl("3_vent_day_filter",              "File1")
-  f1_n_a3_excl  <- pull_excl("5_complete_case_A3",             "File1")
-  f1_post_a3    <- pull_n("5_complete_case_A3",                "File1")
-  f1_n_a6s_excl <- pull_excl("6_complete_case_A6_SAT",         "File1")
-  f1_post_a6s   <- pull_n("6_complete_case_A6_SAT",            "File1")
-  f1_n_a6b_excl <- pull_excl("6_complete_case_A6_SBT",         "File1")
-  f1_post_a6b   <- pull_n("6_complete_case_A6_SBT",            "File1")
-
-  # ── FILE 2 NUMBERS ────────────────────────────────────────────────────────
-  f2_raw_all    <- pull_n("1_raw_load",                        "File2")
-  f2_n_zv_excl  <- pull_excl("2_zero_vent_exclusion",          "File2")
-  f2_post_zv    <- pull_n("2_zero_vent_exclusion",             "File2")
-  f2_n_imp_excl <- pull_excl("3_data_coding_error_exclusion",  "File2")
-  f2_post_imp   <- pull_n("3_data_coding_error_exclusion",     "File2")
-  f2_n_a4_excl  <- pull_excl("5_complete_case_A4",             "File2")
-  f2_post_a4    <- pull_n("5_complete_case_A4",                "File2")
-  f2_n_a5_excl  <- pull_excl("5_complete_case_A5",             "File2")
-  f2_post_a5    <- pull_n("5_complete_case_A5",                "File2")
-
-  # ── FIGURE 1: FILE 1 (Person-Period / Long) ───────────────────────────────
-  cat("  Building File 1 CONSORT diagram...\n")
-
-  tryCatch({
-
-    out_path_f1 <- file.path(
-      out_dir, "figures", prefix_file("fig_consort_file1.png")
-    )
-
-    png(out_path_f1, width = 10, height = 10, units = "in", res = 300)
-
-    plot(
-      add_box(txt = sprintf(
-        "%s Person-Days Loaded\n(%s Hospitalizations)\nFile 1 (Person-Period): Raw Data",
-        format(f1_raw, big.mark = ","),
-        format(n_distinct(df_pp_raw$hospitalization_id), big.mark = ",")
-      )) %>%
-
-      add_side_box(txt = sprintf(
-        "%s Person-Days Excluded\nImpossible variable values\n(SOFA >24, FiO2 out of range,\nsedation_prior not 0/1)",
-        format(f1_n_imp_excl, big.mark = ",")
-      ), text_width = 38) %>%
-
-      add_box(txt = sprintf(
-        "%s Person-Days\nAfter Data Coding Error Exclusion",
-        format(f1_post_imp, big.mark = ",")
-      )) %>%
-
-      add_side_box(txt = sprintf(
-        "%s Person-Days Excluded\nVentilator day outside 1-28 window",
-        format(f1_n_vd_excl, big.mark = ",")
-      ), text_width = 38) %>%
-
-      add_box(txt = sprintf(
-        "%s Person-Days | %s Hospitalizations\nAnalytic File 1 (vent_day 1-28)",
-        format(nrow(df_pp), big.mark = ","),
-        format(n_distinct(df_pp$hospitalization_id), big.mark = ",")
-      )) %>%
-
-      add_split(txt = c(
-        sprintf(
-          "Analysis 3\n(Time to Extubation)\n%s Person-Days\n%s Hospitalizations\n(%s excluded: incomplete covariates)",
-          format(f1_post_a3,  big.mark = ","),
-          format(n_distinct(df_dt$hospitalization_id), big.mark = ","),
-          format(f1_n_a3_excl, big.mark = ",")
-        ),
-        sprintf(
-          "Analysis 6\nSAT-Eligible Days\n%s Person-Days\n(%s excluded: incomplete covariates)",
-          format(f1_post_a6s,  big.mark = ","),
-          format(f1_n_a6s_excl, big.mark = ",")
-        ),
-        sprintf(
-          "Analysis 6\nSBT-Eligible Days\n%s Person-Days\n(%s excluded: incomplete covariates)",
-          format(f1_post_a6b,  big.mark = ","),
-          format(f1_n_a6b_excl, big.mark = ",")
+  # --- Assemble ggplot --------------------------------------------------------
+  p <- ggplot() +
+    # Connectors (drawn first, behind boxes)
+    geom_segment(data = df_segs,
+                 aes(x=x, xend=xend, y=y, yend=yend),
+                 color = arrow_col, linewidth = 0.55) +
+    # Main flow boxes: white fill, gray border
+    geom_rect(data = df_main,
+              aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax),
+              fill = "white", color = "gray35", linewidth = 0.45) +
+    geom_text(data = df_main,
+              aes(x=cx, y=cy, label=txt),
+              size = 2.65, color = "gray15", hjust = 0.5, vjust = 0.5,
+              lineheight = 1.05) +
+    # Exclusion bars: JAMA blue fill, white text (BMC Health Serv Res style)
+    {if (nrow(df_excl) > 0)
+        list(
+          geom_rect(data = df_excl,
+                    aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax),
+                    fill = JAMA_COLORS[3], color = JAMA_COLORS[3],
+                    linewidth = 0.4),
+          geom_text(data = df_excl,
+                    aes(x=cx, y=cy, label=txt),
+                    size = 2.3, color = "white", hjust = 0.5, vjust = 0.5,
+                    lineheight = 0.95)
         )
-      ))
+    } +
+    # Split boxes (bottom row): same style as main boxes
+    {if (nrow(df_split) > 0)
+        list(
+          geom_rect(data = df_split,
+                    aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax),
+                    fill = "white", color = "gray35", linewidth = 0.45),
+          geom_text(data = df_split,
+                    aes(x=cx, y=cy, label=txt),
+                    size = 2.3, color = "gray15", hjust = 0.5, vjust = 0.5,
+                    lineheight = 0.95)
+        )
+    } +
+    xlim(0, 1) + ylim(0, 1) +
+    theme_void()
+
+  if (!is.null(title_txt))
+    p <- p + labs(title = title_txt) +
+             theme(plot.title = element_text(size = 9, hjust = 0.5,
+                                             margin = margin(b = 4)))
+  p
+}
+
+# ── Pull waterfall values (same helper pattern as before) -------------------
+pull_n    <- function(step_name, file_name) {
+  x <- waterfall %>% filter(step == step_name, file == file_name) %>%
+    pull(n_remaining)
+  if (length(x) == 0) return(NA_integer_)
+  as.integer(x[1])
+}
+pull_excl <- function(step_name, file_name) {
+  x <- waterfall %>% filter(step == step_name, file == file_name) %>%
+    pull(n_excluded)
+  if (length(x) == 0) return(NA_integer_)
+  as.integer(x[1])
+}
+
+f1_raw        <- pull_n   ("1_raw_load",                       "File1")
+f1_n_imp_excl <- pull_excl("3_data_coding_error_exclusion",    "File1")
+f1_post_imp   <- pull_n   ("3_data_coding_error_exclusion",    "File1")
+f1_n_vd_excl  <- pull_excl("3_vent_day_filter",               "File1")
+f1_n_a3_excl  <- pull_excl("5_complete_case_A3",              "File1")
+f1_post_a3    <- pull_n   ("5_complete_case_A3",              "File1")
+f1_n_a6s_excl <- pull_excl("6_complete_case_A6_SAT",          "File1")
+f1_post_a6s   <- pull_n   ("6_complete_case_A6_SAT",          "File1")
+f1_n_a6b_excl <- pull_excl("6_complete_case_A6_SBT",          "File1")
+f1_post_a6b   <- pull_n   ("6_complete_case_A6_SBT",          "File1")
+
+f2_raw_all    <- pull_n   ("1_raw_load",                       "File2")
+f2_n_zv_excl  <- pull_excl("2_zero_vent_exclusion",           "File2")
+f2_post_zv    <- pull_n   ("2_zero_vent_exclusion",           "File2")
+f2_n_imp_excl <- pull_excl("3_data_coding_error_exclusion",   "File2")
+f2_post_imp   <- pull_n   ("3_data_coding_error_exclusion",   "File2")
+f2_n_a4_excl  <- pull_excl("5_complete_case_A4",             "File2")
+f2_post_a4    <- pull_n   ("5_complete_case_A4",             "File2")
+f2_n_a5_excl  <- pull_excl("5_complete_case_A5",             "File2")
+f2_post_a5    <- pull_n   ("5_complete_case_A5",             "File2")
+
+# ── FILE 1 CONSORT DIAGRAM ──────────────────────────────────────────────────
+cat("  Building File 1 CONSORT diagram (ggplot2)...\n")
+
+steps_f1 <- list(
+  list(
+    main_txt  = sprintf(
+      "%s Person-Days Loaded\n(%s Hospitalizations)\nFile 1 (Person-Period) — Raw Data",
+      format(f1_raw, big.mark = ","),
+      format(n_distinct(df_pp_raw$hospitalization_id), big.mark = ",")
+    ),
+    excl_txt  = NULL,
+    split_txts = NULL
+  ),
+  list(
+    main_txt  = sprintf(
+      "%s Person-Days\nAfter Data Coding Error Exclusion",
+      format(f1_post_imp, big.mark = ",")
+    ),
+    excl_txt  = sprintf(
+      "%s Person-Days Excluded\nImpossible values:\nSOFA >24, FiO2 out of range\nor sedation_prior not 0/1",
+      format(f1_n_imp_excl, big.mark = ",")
+    ),
+    split_txts = NULL
+  ),
+  list(
+    main_txt  = sprintf(
+      "%s Person-Days | %s Hospitalizations\nAnalytic File 1 (vent_day 1–28)",
+      format(nrow(df_pp), big.mark = ","),
+      format(n_distinct(df_pp$hospitalization_id), big.mark = ",")
+    ),
+    excl_txt  = sprintf(
+      "%s Person-Days Excluded\nVent day outside 1–28 window",
+      format(f1_n_vd_excl, big.mark = ",")
+    ),
+    split_txts = NULL
+  ),
+  list(
+    main_txt   = NULL,
+    excl_txt   = NULL,
+    split_txts = c(
+      sprintf(
+        "Analysis 3\n(Time to Extubation)\n%s Person-Days\n%s Hospitalizations\n(%s excluded: incomplete\ncovariates)",
+        format(f1_post_a3, big.mark = ","),
+        format(n_distinct(df_dt$hospitalization_id), big.mark = ","),
+        format(f1_n_a3_excl, big.mark = ",")
+      ),
+      sprintf(
+        "Analysis 6\nSAT-Eligible Days\n%s Person-Days\n(%s excluded:\nincomplete covariates)",
+        format(f1_post_a6s, big.mark = ","),
+        format(f1_n_a6s_excl, big.mark = ",")
+      ),
+      sprintf(
+        "Analysis 6\nSBT-Eligible Days\n%s Person-Days\n(%s excluded:\nincomplete covariates)",
+        format(f1_post_a6b, big.mark = ","),
+        format(f1_n_a6b_excl, big.mark = ",")
+      )
     )
+  )
+)
 
-    dev.off()
-    cat("  File 1 CONSORT diagram exported:", out_path_f1, "\n")
-
-  }, error = function(e) {
-    dev.off()
+fig_consort_f1 <- tryCatch(
+  draw_consort_gg(steps_f1, "Study Flow — File 1 (Person-Period)"),
+  error = function(e) {
     cat("  WARNING: File 1 CONSORT diagram failed:", conditionMessage(e), "\n")
-    cat("  exclusion_waterfall.csv remains available as text alternative.\n")
-  })
+    NULL
+  }
+)
 
-  # ── FIGURE 2: FILE 2 (Hospitalization / Wide) ─────────────────────────────
-  cat("  Building File 2 CONSORT diagram...\n")
+if (!is.null(fig_consort_f1)) {
+  export_png(fig_consort_f1, "diagnostics",
+             "fig_consort_file1.png", width = 10, height = 10)
+  cat("  File 1 CONSORT diagram exported.\n")
+} else {
+  cat("  exclusion_waterfall.csv remains available as text alternative.\n")
+}
 
-  tryCatch({
+# ── FILE 2 CONSORT DIAGRAM ──────────────────────────────────────────────────
+cat("  Building File 2 CONSORT diagram (ggplot2)...\n")
 
-    out_path_f2 <- file.path(
-      out_dir, "figures", prefix_file("fig_consort_file2.png")
+steps_f2 <- list(
+  list(
+    main_txt  = sprintf(
+      "%s Hospitalizations Identified\nFile 2 (Hospitalization-Level) — Raw Data",
+      format(f2_raw_all, big.mark = ",")
+    ),
+    excl_txt  = NULL,
+    split_txts = NULL
+  ),
+  list(
+    main_txt  = sprintf(
+      "%s Hospitalizations\nAfter Zero Vent-Day Exclusion",
+      format(f2_post_zv, big.mark = ",")
+    ),
+    excl_txt  = sprintf(
+      "%s Hospitalizations Excluded\nZero algorithm-captured vent days\n(Fast-extubation survivors;\nmedian VFD = 28)",
+      format(f2_n_zv_excl, big.mark = ",")
+    ),
+    split_txts = NULL
+  ),
+  list(
+    main_txt  = sprintf(
+      "%s Hospitalizations\nAnalytic Cohort (File 2)",
+      format(f2_post_imp, big.mark = ",")
+    ),
+    excl_txt  = sprintf(
+      "%s Hospitalizations Excluded\nImpossible values:\nage <18, CCI >37, VFD_28 >28\nor SOFA/FiO2/PEEP out of range",
+      format(f2_n_imp_excl, big.mark = ",")
+    ),
+    split_txts = NULL
+  ),
+  list(
+    main_txt   = NULL,
+    excl_txt   = NULL,
+    split_txts = c(
+      sprintf(
+        "Analysis 4\n(VFD-28 Two-Part Model)\n%s Hospitalizations\n(%s excluded:\nincomplete covariates)",
+        format(f2_post_a4, big.mark = ","),
+        format(f2_n_a4_excl, big.mark = ",")
+      ),
+      sprintf(
+        "Analysis 5\n(ICU LOS / Mortality)\n%s Hospitalizations\n(%s excluded:\nincomplete covariates\nor ICU LOS < 1)",
+        format(f2_post_a5, big.mark = ","),
+        format(f2_n_a5_excl, big.mark = ",")
+      )
     )
+  )
+)
 
-    png(out_path_f2, width = 9, height = 9, units = "in", res = 300)
-
-    plot(
-      add_box(txt = sprintf(
-        "%s Hospitalizations Identified\nFile 2 (Hospitalization-Level): Raw Data",
-        format(f2_raw_all, big.mark = ",")
-      )) %>%
-
-      add_side_box(txt = sprintf(
-        "%s Hospitalizations Excluded\nZero algorithm-captured vent days\n(Fast-extubation survivors,\nmedian VFD = 28)",
-        format(f2_n_zv_excl, big.mark = ",")
-      ), text_width = 38) %>%
-
-      add_box(txt = sprintf(
-        "%s Hospitalizations\nAfter Zero Vent-Day Exclusion",
-        format(f2_post_zv, big.mark = ",")
-      )) %>%
-
-      add_side_box(txt = sprintf(
-        "%s Hospitalizations Excluded\nImpossible variable values\n(age <18, CCI >37, VFD_28 >28,\nSOFA/FiO2/PEEP out of range)",
-        format(f2_n_imp_excl, big.mark = ",")
-      ), text_width = 38) %>%
-
-      add_box(txt = sprintf(
-        "%s Hospitalizations\nAnalytic Cohort (File 2)",
-        format(f2_post_imp, big.mark = ",")
-      )) %>%
-
-      add_split(txt = c(
-        sprintf(
-          "Analysis 4\n(VFD-28 Two-Part Model)\n%s Hospitalizations\n(%s excluded: incomplete covariates)",
-          format(f2_post_a4,  big.mark = ","),
-          format(f2_n_a4_excl, big.mark = ",")
-        ),
-        sprintf(
-          "Analysis 5\n(ICU LOS / Mortality)\n%s Hospitalizations\n(%s excluded: incomplete covariates\nor ICU LOS <1)",
-          format(f2_post_a5,  big.mark = ","),
-          format(f2_n_a5_excl, big.mark = ",")
-        )
-      ))
-    )
-
-    dev.off()
-    cat("  File 2 CONSORT diagram exported:", out_path_f2, "\n\n")
-
-  }, error = function(e) {
-    dev.off()
+fig_consort_f2 <- tryCatch(
+  draw_consort_gg(steps_f2, "Study Flow — File 2 (Hospitalization-Level)"),
+  error = function(e) {
     cat("  WARNING: File 2 CONSORT diagram failed:", conditionMessage(e), "\n")
-    cat("  exclusion_waterfall.csv remains available as text alternative.\n\n")
-  })
+    NULL
+  }
+)
 
-} # end consort block
+if (!is.null(fig_consort_f2)) {
+  export_png(fig_consort_f2, "diagnostics",
+             "fig_consort_file2.png", width = 9, height = 9)
+  cat("  File 2 CONSORT diagram exported.\n\n")
+} else {
+  cat("  exclusion_waterfall.csv remains available as text alternative.\n\n")
+}
 
 # =============================================================================
 # SESSION INFO

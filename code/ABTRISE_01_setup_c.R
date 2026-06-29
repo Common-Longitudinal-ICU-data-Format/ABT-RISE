@@ -19,9 +19,8 @@
 # WHAT THIS SCRIPT PRODUCES:
 #   outputs/diagnostics/  cohort_summary diagnostics, missingness,
 #                         exclusion waterfall, impossible values,
-#                         delivery rate tables and figure
-#   outputs/tables/       delivery_rates_by_hospital.csv
-#   outputs/figures/      fig_delivery_rates.png, delivery_rates_fig.csv
+#                         delivery rate tables and figures,
+#                         table 1, sedation distribution
 #
 # DATA INPUTS:
 #   File 1: file1_person_period.parquet   -- one row per patient per vent-day
@@ -70,7 +69,7 @@ suppressPackageStartupMessages({
   library(blandr)       # Bland-Altman (A6)
 })
 
-cat("=== ABT-RISE Site Analysis Scripts ===\n")
+cat("=== ABT-RISE Site Analysis ===\n")
 cat("Site:", site_id, "\n")
 cat("Setup started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n")
 
@@ -79,18 +78,21 @@ cat("Setup started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n")
 
 subdirs <- c(
   "diagnostics",
-  "tables",
-  "models/a2",
-  "models/a3",
-  "models/a4",
-  "models/a5",
-  "models/a6",
-  "figures/a2",
-  "figures/a3",
-  "figures/a4",
-  "figures/a5",
-  "figures/a6",
-  "figures"
+  "A2_criterion/models",
+  "A2_criterion/tables",
+  "A2_criterion/figures",
+  "A3_tte_outcomes/models",
+  "A3_tte_outcomes/tables",
+  "A3_tte_outcomes/figures",
+  "A4_VFD_outcomes/models",
+  "A4_VFD_outcomes/tables",
+  "A4_VFD_outcomes/figures",
+  "A5_mort_outcomes/models",
+  "A5_mort_outcomes/tables",
+  "A5_mort_outcomes/figures",
+  "A6_benchmark_outcomes/models",
+  "A6_benchmark_outcomes/tables",
+  "A6_benchmark_outcomes/figures"
 )
 
 for (d in subdirs) {
@@ -117,7 +119,8 @@ export_rds <- function(obj, subfolder, filename) {
 
 export_png <- function(plot_obj, subfolder, filename, width = 10, height = 6) {
   path <- file.path(out_dir, subfolder, prefix_file(filename))
-  ggsave(path, plot = plot_obj, width = width, height = height, dpi = 150)
+  ggsave(path, plot = plot_obj, width = width, height = height,
+         dpi = 300, bg = "white")
   cat("  Exported:", file.path(subfolder, prefix_file(filename)), "\n")
 }
 
@@ -139,8 +142,7 @@ drop_single_level <- function(vars, data) {
 # and in greyscale print. Used consistently across all four scripts.
 #
 # Trial colors (SAT / SBT):
-#   SAT = blue (#0077BB), SBT = orange (#EE7733)
-#   Chosen for maximum contrast under all colorblindness simulations.
+#   SAT = blue (#0077BB), SBT = orange (#EE7733)#   Chosen for maximum contrast under all colorblindness simulations.
 #
 # Four-group palette (sedation figure, eligibility groups):
 #   Overall = blue, SAT-eligible = cyan, SBT-eligible = orange, Either = teal
@@ -155,6 +157,19 @@ clr_4grp <- c(
   sat_elig = "#33BBEE",  # cyan
   sbt_elig = "#EE7733",  # orange
   either   = "#009988"   # teal
+)
+
+# JAMA_COLORS vector (referenced by ABTRISE_02_criterion_c.R).
+# Mapped to Paul Tol accessible equivalents for site distribution.
+JAMA_COLORS <- c(
+  "#0077BB",  # [1] dark slate  -> Tol blue
+
+  "#EE7733",  # [2] muted orange -> Tol orange
+  "#33BBEE",  # [3] JAMA blue   -> Tol cyan
+  "#CC3311",  # [4] muted red   -> Tol red
+  "#009988",  # [5] sage green  -> Tol teal
+  "#AA3377",  # [6] muted purple -> Tol purple
+  "#BBBBBB"   # [7] warm gray   -> Tol grey
 )
 
 # --- 1.5 Shared ggplot theme -------------------------------------------------
@@ -178,7 +193,9 @@ theme_abtrise <- function(base_size = 11) {
 
 cat("-- Section 1: Loading data files\n")
 
+#PP: one row per patient, per day
 df_pp_raw   <- read_parquet(file.path(data_dir, "file1_person_period.parquet"))
+#hosp: one row per patient (current hospitalization)
 df_hosp_raw <- read_parquet(file.path(data_dir, "file2_hospitalization_level.parquet"))
 
 cat("File 1 (person-period):   ", nrow(df_pp_raw), "rows,",
@@ -196,7 +213,6 @@ if (single_hospital) {
   cat("NOTE: Single-hospital site detected.",
       "Random intercepts will be dropped; fixed-effects models only.\n\n")
 }
-
 # Random intercept term -- suppressed for single-hospital sites
 # Used in all analysis model formulas
 re_hosp <- if (single_hospital) "" else "(1 | hospital_id)"
@@ -206,12 +222,7 @@ re_hosp <- if (single_hospital) "" else "(1 | hospital_id)"
 # =============================================================================
 
 cat("-- Section 2: Data preparation\n\n")
-
 # --- 2.1 Population consistency check ----------------------------------------
-# Identify hospitalizations in File 2 with zero algorithm vent days
-# (not present in File 1). These are fast-extubation survivors with
-
-
 cat("-- 2.1 Population consistency check\n")
 
 ids_pp   <- unique(df_pp_raw$hospitalization_id)
@@ -257,6 +268,8 @@ cat("File 1 after zero-vent-day exclusion:", nrow(df_pp_raw), "rows,",
     n_distinct(df_pp_raw$hospitalization_id), "hospitalizations\n")
 cat("File 2 after zero-vent-day exclusion:", nrow(df_hosp_raw),
     "hospitalizations\n\n")
+
+export_csv(zero_vent_profile, "diagnostics", "zero_vent_day_profile.csv")
 
 # --- 2.3 Exclusion waterfall -------------------------------------------------
 
@@ -397,9 +410,7 @@ waterfall <- log_step(waterfall, "3_data_coding_error_exclusion",
 export_csv(impossible_all, "diagnostics", "impossible_values.csv")
 
 # --- 2.4 Person-period file prep (File 1) ------------------------------------
-
 cat("-- 2.4 Person-period file preparation\n")
-
 df_pp <- df_pp_raw %>%
   filter(vent_day >= 1, vent_day <= 28) %>%
   left_join(
@@ -432,15 +443,19 @@ waterfall <- log_step(waterfall, "3_vent_day_filter",
                       n_distinct(df_pp_raw$hospitalization_id) - n_distinct(df_pp$hospitalization_id),
                       "Restricted to vent_day 1-28")
 
-cat("File 1 after vent_day 1-28 filter:", nrow(df_pp), "rows,",
-    n_distinct(df_pp$hospitalization_id), "hospitalizations\n")
-cat("Extubation events:", sum(df_pp$extubated,   na.rm = TRUE), "\n")
-cat("Death events:     ", sum(df_pp$died_today,  na.rm = TRUE), "\n\n")
+cat("File 1 after prep:", nrow(df_pp), "person-days,",
+    n_distinct(df_pp$hospitalization_id), "hospitalizations,",
+    n_distinct(df_pp$hospital_id), "hospitals\n")
+cat("Extubation events:", sum(df_pp$extubated,            na.rm = TRUE), "\n")
+cat("Death events:     ", sum(df_pp$died_today,           na.rm = TRUE), "\n")
+cat("SAT-eligible days:", sum(df_pp$SAT_eligible == 1,    na.rm = TRUE), "\n")
+cat("SBT-eligible days:", sum(df_pp$SBT_eligible == 1,    na.rm = TRUE), "\n")
+cat("Median vent_day:  ", median(df_pp$vent_day,          na.rm = TRUE),
+    "[", quantile(df_pp$vent_day, 0.25, na.rm = TRUE), "-",
+    quantile(df_pp$vent_day, 0.75, na.rm = TRUE), "]\n\n")
 
 # --- 2.5 Hospitalization-level file prep (File 2) ----------------------------
-
 cat("-- 2.5 Hospitalization-level file preparation\n")
-
 df_hosp <- df_hosp_raw %>%
   mutate(
     survivor_28d    = as.integer(death_flag == 0),
@@ -491,12 +506,10 @@ cat("Survivors at 28d: ", sum(df_hosp$survivor_28d,    na.rm = TRUE), "\n\n")
 # =============================================================================
 # SEDATION OVERLAP DIAGNOSTICS
 # =============================================================================
-
 # --- 1. Hospitalization level: how many agents ever used (from df_hosp) ------
 # Uses *_mean > 0 as proxy for "agent used on >= 1 vent day"
 
 cat("-- Sedation overlap: hospitalization level\n")
-
 sed_agents <- c("propofol", "fentanyl", "hydromorphone",
                 "morphine", "lorazepam", "midazolam", "nmb")
 
@@ -518,7 +531,6 @@ cat(" n =", sum(hosp_sed$n_agents_ever > 1),
 
 # --- 2. Patient-day level: how many agents on same vent day (from df_pp) -----
 # Uses *_prior_flag variables (binary: agent given on that day)
-
 cat("-- Sedation overlap: patient-day level\n")
 
 day_agents <- c("propofol_prior_flag", "fentanyl_prior_flag",
@@ -584,26 +596,158 @@ zero_sed_profile <- df_hosp %>%
 print(as.data.frame(zero_sed_profile))
 cat("\n")
 
+# --- Sedation diagnostics exports (tables + figures) -----------------------
+
+cat("-- Exporting sedation overlap diagnostics\n")
+
+# 3a. Agent count distributions -- hospitalization and day level
+sed_hosp_dist <- tibble(
+  level          = "hospitalization",
+  n_agents       = as.integer(names(table(hosp_sed$n_agents_ever))),
+  n_observations = as.integer(table(hosp_sed$n_agents_ever)),
+  pct            = round(as.numeric(table(hosp_sed$n_agents_ever)) /
+                           nrow(hosp_sed) * 100, 1)
+)
+
+sed_day_dist <- tibble(
+  level          = "patient_day",
+  n_agents       = as.integer(names(table(pp_sed$n_agents_day))),
+  n_observations = as.integer(table(pp_sed$n_agents_day)),
+  pct            = round(as.numeric(table(pp_sed$n_agents_day)) /
+                           nrow(pp_sed) * 100, 1)
+)
+
+sed_day_elig_dist <- tibble(
+  level          = "patient_day_eligible",
+  n_agents       = as.integer(names(table(pp_sed_elig$n_agents_day))),
+  n_observations = as.integer(table(pp_sed_elig$n_agents_day)),
+  pct            = round(as.numeric(table(pp_sed_elig$n_agents_day)) /
+                           nrow(pp_sed_elig) * 100, 1)
+)
+
+export_csv(
+  bind_rows(sed_hosp_dist, sed_day_dist, sed_day_elig_dist),
+  "diagnostics", "sedation_agent_count_distribution.csv"
+)
+
+# 3b. Co-occurrence matrix as tidy long-format CSV
+agent_labels <- gsub("_prior_flag", "", day_agents)
+co_tidy <- as_tibble(co_mat_n) %>%
+  mutate(agent_row = agent_labels) %>%
+  pivot_longer(cols = -agent_row, names_to = "agent_col", values_to = "n_days") %>%
+  mutate(
+    agent_col = gsub("_prior_flag", "", agent_col),
+    pct_days  = round(n_days / nrow(df_pp) * 100, 2),
+    n_total_days = nrow(df_pp)
+  )
+
+export_csv(co_tidy, "diagnostics", "sedation_cooccurrence_matrix.csv")
+
+# 3c. Zero-sedation profile
+export_csv(zero_sed_profile, "diagnostics", "zero_sedation_profile.csv")
+
+# 3d. Sedation overlap figures
+
+# Figure: co-occurrence heatmap (lower triangle only)
+co_heatmap_data <- co_tidy %>%
+  # Lower triangle: agent_row >= agent_col alphabetically, excluding diagonal
+  filter(agent_row != agent_col) %>%
+  # Keep unique pairs (lower triangle)
+  rowwise() %>%
+  mutate(pair = paste(sort(c(agent_row, agent_col)), collapse = "_")) %>%
+  ungroup() %>%
+  distinct(pair, .keep_all = TRUE) %>%
+  select(-pair)
+
+fig_sed_heatmap <- ggplot(co_tidy,
+                           aes(x = agent_col, y = agent_row,
+                               fill = pct_days)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = sprintf("%.1f%%", pct_days)),
+            size = 2.8, color = "white", fontface = "bold") +
+  scale_fill_gradient(low = "gray85", high = JAMA_COLORS[3],
+                      name = "% of vent days",
+                      labels = function(x) paste0(round(x, 1), "%")) +
+  scale_x_discrete(position = "top") +
+  labs(
+    title    = "Sedation Agent Co-Occurrence (Patient-Day Level)",
+    subtitle = paste0("n = ", format(nrow(df_pp), big.mark = ","),
+                      " vent days | diagonal = single-agent prevalence"),
+    x        = NULL,
+    y        = NULL
+  ) +
+  theme_abtrise() +
+  theme(
+    axis.text.x       = element_text(angle = 45, hjust = 0, size = 9),
+    axis.text.y       = element_text(size = 9),
+    panel.grid        = element_blank(),
+    panel.border      = element_blank(),
+    axis.ticks        = element_blank(),
+    legend.position   = "right"
+  )
+
+export_png(fig_sed_heatmap, "diagnostics", "fig_sedation_cooccurrence.png",
+           width = 7, height = 5.5)
+
+# Figure: overlap bar chart -- stacked bars by n_agents (hosp level)
+fig_sed_overlap <- ggplot(sed_hosp_dist,
+                           aes(x = factor(n_agents), y = pct)) +
+  geom_col(fill = JAMA_COLORS[3], alpha = 0.85, width = 0.65) +
+  geom_text(aes(label = paste0(n_observations, "\n(", pct, "%)")),
+            vjust = -0.3, size = 3, color = "gray25") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)),
+                     labels = function(x) paste0(x, "%")) +
+  labs(
+    title    = "Number of Distinct Sedation Agents Per Hospitalization",
+    subtitle = paste0("n = ", format(nrow(hosp_sed), big.mark = ","),
+                      " hospitalizations"),
+    x        = "Number of agents used (any vent day)",
+    y        = "% of hospitalizations"
+  ) +
+  theme_abtrise() +
+  theme(panel.grid.minor = element_blank())
+
+export_png(fig_sed_overlap, "diagnostics", "fig_sedation_overlap_counts.png",
+           width = 7, height = 5)
+
+cat("  Sedation diagnostics exported.\n\n")
+
 cat("-- 2.6 Covariate missingness check\n")
+
+# ---- 2.6a Full-cohort missingness (all covariates, both files) ---------------
 
 miss_vars_pp <- c("SOFA_prior", "FiO2_prior", "PEEP_prior",
                   "sedation_prior", "NEE_prior",
-                  "hospital_type", "location_type")
+                  "SAT_delivered_primary", "SBT_delivered_2min",
+                  "SAT_delivered_modified", "SBT_delivered_5min",
+                  "SAT_eligible", "SBT_eligible",
+                  "extubated", "vent_day")
 
 miss_vars_hosp <- c("age", "sex", "CCI",
                     "SOFA_mean", "FiO2_mean", "PEEP_mean", "sedation_mean",
+                    "NEE_mean",
                     "SAT_prop_final_primary", "SBT_prop_final_2min",
-                    "hospital_type", "location_type",
+                    "SAT_prop_final_modified", "SBT_prop_final_5min",
+                    "alive_28d", "VFD_28", "ICU_LOS", "death_flag",
+                    "extubation_flag", "time_to_extubation",
                     "mv_count_in_index_icu_stay",
                     "mv_count_in_whole_hospitalization")
 
+# Only check variables that exist in the data
+miss_vars_pp   <- intersect(miss_vars_pp,   names(df_pp))
+miss_vars_hosp <- intersect(miss_vars_hosp, names(df_hosp))
+
 miss_pp <- df_pp %>%
   summarise(across(all_of(miss_vars_pp),
-                   ~ round(mean(is.na(.)) * 100, 1))) %>%
-  pivot_longer(everything(),
-               names_to = "variable", values_to = "pct_missing") %>%
+                   list(n_miss   = ~ sum(is.na(.)),
+                        pct_miss = ~ round(mean(is.na(.)) * 100, 2)),
+                   .names = "{.col}__{.fn}")) %>%
+  pivot_longer(everything(), names_to = "var_fn", values_to = "value") %>%
+  separate(var_fn, into = c("variable", "fn"), sep = "__") %>%
+  pivot_wider(names_from = fn, values_from = value) %>%
   mutate(
     file = "File1",
+    n_total = nrow(df_pp),
     note = case_when(
       variable %in% c("SOFA_prior","FiO2_prior","PEEP_prior","sedation_prior") ~
         "Day 1 NAs expected by design",
@@ -615,22 +759,29 @@ miss_pp <- df_pp %>%
 
 miss_hosp <- df_hosp %>%
   summarise(across(all_of(miss_vars_hosp),
-                   ~ round(mean(is.na(.)) * 100, 1))) %>%
-  pivot_longer(everything(),
-               names_to = "variable", values_to = "pct_missing") %>%
-  mutate(file = "File2", note = "")
+                   list(n_miss   = ~ sum(is.na(.)),
+                        pct_miss = ~ round(mean(is.na(.)) * 100, 2)),
+                   .names = "{.col}__{.fn}")) %>%
+  pivot_longer(everything(), names_to = "var_fn", values_to = "value") %>%
+  separate(var_fn, into = c("variable", "fn"), sep = "__") %>%
+  pivot_wider(names_from = fn, values_from = value) %>%
+  mutate(file = "File2", n_total = nrow(df_hosp), note = "")
 
-miss_all <- bind_rows(miss_pp, miss_hosp)
-cat("Covariate missingness summary:\n")
-print(as.data.frame(miss_all))
+miss_full_cohort <- bind_rows(miss_pp, miss_hosp) %>%
+  select(file, variable, n_miss, pct_miss, n_total, note) %>%
+  arrange(file, desc(pct_miss))
 
-flag_miss <- miss_all %>%
-  filter(pct_missing > 10,
+cat("Full-cohort missingness summary:\n")
+print(as.data.frame(miss_full_cohort %>% filter(pct_miss > 0)))
+
+flag_miss <- miss_full_cohort %>%
+  filter(pct_miss > 10,
          !variable %in% c("SOFA_prior","FiO2_prior","PEEP_prior",
-                          "sedation_prior","NEE_prior"))
+                          "sedation_prior","NEE_prior",
+                          "time_to_extubation"))
 
 if (nrow(flag_miss) > 0) {
-  cat("\nWARNING: Variables > 10% missing:\n")
+  cat("\nWARNING: Variables > 10% missing (excluding expected NAs):\n")
   print(as.data.frame(flag_miss))
 } else {
   cat("\nAll key covariates < 10% missing. Complete case analysis proceeds.\n")
@@ -645,6 +796,135 @@ if (nee_miss_check > 0) {
 } else {
   cat("NEE_prior binary recode verified: 0% missing (NA coded as 0).\n\n")
 }
+
+# ---- 2.6b Analysis-level missingness and exclusion counts --------------------
+# For each analysis, compute how many observations would be excluded by
+# complete-case filtering on the required covariates. This lets sites preview
+# analytic sample sizes before running the downstream scripts.
+
+cat("-- 2.6b Analysis-level complete-case preview\n\n")
+
+# Helper: count complete and excluded for a set of covariates
+cc_preview <- function(data, file_label, analysis_label, vars) {
+  vars_present <- intersect(vars, names(data))
+  vars_absent  <- setdiff(vars, names(data))
+
+  n_total    <- nrow(data)
+  n_complete <- sum(complete.cases(data[, vars_present, drop = FALSE]))
+  n_excluded <- n_total - n_complete
+
+  # Per-variable contribution to missingness
+  per_var <- purrr::map_dfr(vars_present, function(v) {
+    tibble(
+      analysis  = analysis_label,
+      file      = file_label,
+      variable  = v,
+      n_missing = sum(is.na(data[[v]])),
+      pct_missing = round(mean(is.na(data[[v]])) * 100, 2)
+    )
+  })
+
+  summary_row <- tibble(
+    analysis       = analysis_label,
+    file           = file_label,
+    n_total        = n_total,
+    n_complete     = n_complete,
+    n_excluded     = n_excluded,
+    pct_excluded   = round(n_excluded / n_total * 100, 1),
+    vars_checked   = paste(vars_present, collapse = ", "),
+    vars_absent    = if (length(vars_absent) > 0)
+                       paste(vars_absent, collapse = ", ") else ""
+  )
+
+  list(summary = summary_row, per_var = per_var)
+}
+
+# A3 (File 1 -- person-period discrete-time):
+cc_a3 <- cc_preview(
+  df_pp, "File1", "A3_discrete_time",
+  c("SAT_delivered_primary", "SBT_delivered_2min",
+    "SOFA_prior", "FiO2_prior", "PEEP_prior", "sedation_prior",
+    "age", "sex", "CCI")
+)
+
+# A4 (File 2 -- hospitalization-level two-part model):
+cc_a4 <- cc_preview(
+  df_hosp, "File2", "A4_VFD28_twopart",
+  c("SAT_prop_final_primary", "SBT_prop_final_2min",
+    "age", "sex", "CCI",
+    "SOFA_mean", "FiO2_mean", "PEEP_mean", "sedation_mean",
+    "alive_28d", "VFD_28")
+)
+
+# A5 (File 2 -- ICU LOS + mortality):
+cc_a5 <- cc_preview(
+  df_hosp, "File2", "A5_LOS_mortality",
+  c("SAT_prop_final_primary", "SBT_prop_final_2min",
+    "age", "sex", "CCI",
+    "SOFA_mean", "FiO2_mean", "PEEP_mean", "sedation_mean",
+    "ICU_LOS", "death_flag")
+)
+
+# A6 SAT (File 1 -- eligible SAT days):
+cc_a6_sat <- cc_preview(
+  df_pp %>% filter(SAT_eligible == 1L),
+  "File1", "A6_SAT_benchmarking",
+  c("SAT_delivered_primary",
+    "age", "sex", "CCI",
+    "SOFA_prior", "FiO2_prior", "PEEP_prior", "sedation_prior")
+)
+
+# A6 SBT (File 1 -- eligible SBT days):
+cc_a6_sbt <- cc_preview(
+  df_pp %>% filter(SBT_eligible == 1L),
+  "File1", "A6_SBT_benchmarking",
+  c("SBT_delivered_2min",
+    "age", "sex", "CCI",
+    "SOFA_prior", "FiO2_prior", "PEEP_prior", "sedation_prior")
+)
+
+# Combine summaries
+cc_summary_all <- bind_rows(
+  cc_a3$summary, cc_a4$summary, cc_a5$summary,
+  cc_a6_sat$summary, cc_a6_sbt$summary
+)
+
+cc_pervar_all <- bind_rows(
+  cc_a3$per_var, cc_a4$per_var, cc_a5$per_var,
+  cc_a6_sat$per_var, cc_a6_sbt$per_var
+) %>%
+  filter(n_missing > 0)
+
+cat("Analysis-level complete-case preview:\n")
+print(as.data.frame(cc_summary_all %>%
+  select(analysis, file, n_total, n_complete, n_excluded, pct_excluded)))
+cat("\n")
+
+if (nrow(cc_pervar_all) > 0) {
+  cat("Variables contributing to exclusion (missing > 0):\n")
+  print(as.data.frame(cc_pervar_all))
+  cat("\n")
+}
+
+# Flag analyses losing > 15% to complete case
+cc_high_loss <- cc_summary_all %>% filter(pct_excluded > 15)
+if (nrow(cc_high_loss) > 0) {
+  cat("WARNING: The following analyses lose >15% to complete-case filtering:\n")
+  for (i in seq_len(nrow(cc_high_loss))) {
+    cat("  ", cc_high_loss$analysis[i], ": ",
+        cc_high_loss$n_excluded[i], " excluded (",
+        cc_high_loss$pct_excluded[i], "%)\n")
+  }
+  cat("  Review per-variable missingness to identify primary driver(s).\n")
+  cat("  Consider imputation or contacting CC for guidance.\n\n")
+} else {
+  cat("All analyses < 15% complete-case loss.\n\n")
+}
+
+# Export both tables
+export_csv(miss_full_cohort, "diagnostics", "missingness_full_cohort.csv")
+export_csv(cc_summary_all,   "diagnostics", "missingness_analysis_level_summary.csv")
+export_csv(cc_pervar_all,    "diagnostics", "missingness_analysis_level_pervar.csv")
 
 # --- 2.8 Delivery rate descriptives ------------------------------------------
 
@@ -690,21 +970,18 @@ delivery_by_day <- df_pp %>%
 # --- 2.9 Shared covariate lists ----------------------------------------------
 # Used by all analysis scripts via source()
 
-covariates_baseline <- c("age", "sex", "CCI",
-                         "hospital_type", "location_type")
+covariates_baseline <- c("age", "sex", "CCI")
 
 covariates_tv       <- c("SOFA_prior", "FiO2_prior", "PEEP_prior",
                          "sedation_prior", "NEE_prior")
 
 covariates_mean     <- c("SOFA_mean", "FiO2_mean", "PEEP_mean",
-                         "sedation_mean",
-                         "hospital_type", "location_type")
+                         "sedation_mean")
 
 # A6-specific covariate list (time-varying + baseline, for vent-day model)
 covariates_a6 <- c("age", "sex", "CCI",
                    "SOFA_prior", "FiO2_prior", "PEEP_prior",
-                   "sedation_prior", "NEE_prior",
-                   "hospital_type", "location_type")
+                   "sedation_prior", "NEE_prior")
 
 cat("Covariate lists:\n")
 cat("  Baseline:     ", paste(covariates_baseline, collapse = ", "), "\n")
@@ -716,20 +993,23 @@ cat("  RE term:      ",
 
 # --- 2.10 Flowsheet gate detection (Analysis 2 and A6 CCC) ------------------
 # Derived from data -- sites do not configure manually.
-# site_has_flowsheet_sat / _sbt = TRUE if any non-missing 0/1 flowsheet
-# values are present in eligible-day rows.
+# site_has_flowsheet_sat / _sbt = TRUE if at least one positive flowsheet
+# event (== 1) exists on eligible-day rows. A column of all 0s means the
+# site does not document that trial in their flowsheet -- all-zero reference
+# data produces spurious accuracy/specificity with zero sensitivity, so we
+# require evidence that the site actually records the trial.
 
 cat("-- 2.8 Flowsheet gate detection\n")
 
 site_has_flowsheet_sat <- df_pp %>%
   filter(SAT_eligible == 1) %>%
   pull(flowsheet_SAT) %>%
-  { any(. %in% c(0L, 1L), na.rm = TRUE) }
+  { any(. == 1L, na.rm = TRUE) }
 
 site_has_flowsheet_sbt <- df_pp %>%
   filter(SBT_eligible == 1) %>%
   pull(flowsheet_SBT) %>%
-  { any(. %in% c(0L, 1L), na.rm = TRUE) }
+  { any(. == 1L, na.rm = TRUE) }
 
 cat("site_has_flowsheet_sat:", site_has_flowsheet_sat, "\n")
 cat("site_has_flowsheet_sbt:", site_has_flowsheet_sbt, "\n")
@@ -748,14 +1028,14 @@ cat("\n")
 # Four-column structure: Overall | SAT-eligible | SBT-eligible | Either-eligible
 # Eligibility defined at hospitalization level: >= 1 eligible vent day
 # Overall = all df_hosp (all hospitalizations with >= 1 algorithm vent day)
-# Either  = any_SAT_eligible | any_SBT_eligible (union; for team review)
+# Either  = any_SAT_eligible | any_SBT_eligible
 # Continuous variables: median (IQR)
 # Categorical variables: n (%)
 # Sedation variables from df_hosp: episode-level means (proportion of vent
 #   days with each agent delivered)
 # Outputs:
-#   outputs/tables/table1_cohort_characteristics.csv  -- CC submission
-#   outputs/tables/table1_cohort_characteristics.html -- formatted for review
+#   outputs/diagnostics/table1_cohort_characteristics.csv
+#   outputs/diagnostics/table1_cohort_characteristics.html -- formatted for review
 
 cat("-- 2.10 Table 1: Analytic cohort characteristics\n")
 
@@ -805,7 +1085,6 @@ cat("  Age < 65:       ", n_u65, "(", round(n_u65/n_overall*100,1), "% of cohort
 # % of patients who received each agent >= 1 vent day
 # Four eligibility groups: Overall | SAT-eligible | SBT-eligible | Either-eligible
 # NMB in separate panel
-# NOTE: Moved here (after df_t1 and n_* scalars defined) from earlier position
 # =============================================================================
 
 library(forcats)
@@ -928,7 +1207,7 @@ p_nmb <- ggplot(nmb_plot_data,
     labels = function(x) paste0(x, "%")
   ) +
   labs(
-    title = "B  Neuromuscular Blockade",
+    title = "B  Neuromuscular Blockade (NMB)",
     x     = "Patients receiving NMB (% of group)",
     y     = NULL
   ) +
@@ -945,10 +1224,26 @@ fig_sedation <- p_sed / p_nmb +
 
 print(fig_sedation)
 
-export_png(fig_sedation, "figures", "fig_sedation_distribution.png",
+export_png(fig_sedation, "diagnostics", "fig_sedation_distribution.png",
            width = 7, height = 7)
 
 cat("Sedation distribution figure exported.\n\n")
+
+# Export sedation prevalence data for CC aggregation
+export_csv(
+  bind_rows(sed_prev, no_sed_prev) %>%
+    mutate(
+      group_type = case_when(
+        str_detect(as.character(group), "^Overall")         ~ "Overall",
+        str_detect(as.character(group), "^SAT-Eligible")    ~ "SAT-Eligible",
+        str_detect(as.character(group), "^SBT-Eligible")    ~ "SBT-Eligible",
+        str_detect(as.character(group), "^Either-Eligible") ~ "Either-Eligible"
+      ),
+      n_patients = as.integer(str_extract(as.character(group), "(?<=N=)\\d+"))
+    ) %>%
+    select(group_type, n_patients, agent, pct_patients),
+  "diagnostics", "sedation_distribution_fig.csv"
+)
 
 # --- Helper functions --------------------------------------------------------
 
@@ -996,7 +1291,9 @@ d_sat    <- df_t1 %>% filter(any_SAT_eligible)
 d_sbt    <- df_t1 %>% filter(any_SBT_eligible)
 d_either <- df_t1 %>% filter(any_either_eligible)
 
-t1_rows <- bind_rows(
+build_t1_rows <- function(d_all, d_sat, d_sbt, d_either,
+                           n_overall, n_sat_elig, n_sbt_elig, n_either) {
+  bind_rows(
 
   # --- HEADER ROW ---
   build_row(
@@ -1221,7 +1518,11 @@ t1_rows <- bind_rows(
             indent = TRUE)
 
 ) %>%
-  select(-bold)  # drop internal formatting flag before export
+    select(-bold)
+}
+
+t1_rows <- build_t1_rows(d_all, d_sat, d_sbt, d_either,
+                          n_overall, n_sat_elig, n_sbt_elig, n_either)
 
 # --- Rename columns with n in header -----------------------------------------
 names(t1_rows) <- c(
@@ -1271,7 +1572,54 @@ t1_footnotes <- t1_footnotes[, names(t1_rows)]
 t1_export <- bind_rows(t1_rows, t1_footnotes)
 
 # --- Export CSV --------------------------------------------------------------
-export_csv(t1_export, "tables", "table1_cohort_characteristics.csv")
+export_csv(t1_export, "diagnostics", "table1_cohort_characteristics.csv")
+
+# --- SA: Table 1 split by age group (<65 vs >=65) ----------------------------
+cat("-- 2.10b Table 1 by age group (sensitivity analysis)\n")
+
+df_t1_u65  <- df_t1 %>% filter(age <  65)
+df_t1_ge65 <- df_t1 %>% filter(age >= 65)
+
+n_overall_u65   <- nrow(df_t1_u65)
+n_sat_elig_u65  <- sum(df_t1_u65$any_SAT_eligible)
+n_sbt_elig_u65  <- sum(df_t1_u65$any_SBT_eligible)
+n_either_u65    <- sum(df_t1_u65$any_either_eligible)
+
+n_overall_ge65  <- nrow(df_t1_ge65)
+n_sat_elig_ge65 <- sum(df_t1_ge65$any_SAT_eligible)
+n_sbt_elig_ge65 <- sum(df_t1_ge65$any_SBT_eligible)
+n_either_ge65   <- sum(df_t1_ge65$any_either_eligible)
+
+t1_u65 <- build_t1_rows(
+  df_t1_u65, df_t1_u65 %>% filter(any_SAT_eligible),
+  df_t1_u65 %>% filter(any_SBT_eligible), df_t1_u65 %>% filter(any_either_eligible),
+  n_overall_u65, n_sat_elig_u65, n_sbt_elig_u65, n_either_u65
+)
+names(t1_u65) <- c(
+  "Variable",
+  paste0("u65_Overall (N=", n_overall_u65, ")"),
+  paste0("u65_SAT-Eligible (N=", n_sat_elig_u65, ")"),
+  paste0("u65_SBT-Eligible (N=", n_sbt_elig_u65, ")"),
+  paste0("u65_Either-Eligible (N=", n_either_u65, ")")
+)
+
+t1_ge65 <- build_t1_rows(
+  df_t1_ge65, df_t1_ge65 %>% filter(any_SAT_eligible),
+  df_t1_ge65 %>% filter(any_SBT_eligible), df_t1_ge65 %>% filter(any_either_eligible),
+  n_overall_ge65, n_sat_elig_ge65, n_sbt_elig_ge65, n_either_ge65
+)
+names(t1_ge65) <- c(
+  "Variable",
+  paste0("ge65_Overall (N=", n_overall_ge65, ")"),
+  paste0("ge65_SAT-Eligible (N=", n_sat_elig_ge65, ")"),
+  paste0("ge65_SBT-Eligible (N=", n_sbt_elig_ge65, ")"),
+  paste0("ge65_Either-Eligible (N=", n_either_ge65, ")")
+)
+
+t1_age_split <- bind_cols(t1_u65, t1_ge65 %>% select(-Variable))
+export_csv(t1_age_split, "diagnostics", "SA_age_split_table1_cohort_characteristics.csv")
+cat("  Age-split Table 1 exported: <65 n=", n_overall_u65,
+    "| >=65 n=", n_overall_ge65, "\n\n")
 
 # --- Formatted flextable (HTML preview) --------------------------------------
 # Requires flextable package -- skip gracefully if not available
@@ -1307,7 +1655,7 @@ tryCatch({
     fontsize(i = 1, size = 7, part = "footer")
   
   # Save as HTML for browser preview
-  html_path <- file.path(out_dir, "tables",
+  html_path <- file.path(out_dir, "diagnostics",
                          paste0(site_id, "_table1_cohort_characteristics.html"))
   save_as_html(ft, path = html_path)
   cat("  Table 1 HTML preview saved:", html_path, "\n")
@@ -1323,10 +1671,63 @@ cat("Table 1 complete.\n\n")
 
 cat("-- 2.9 Exporting setup diagnostics\n")
 
-export_csv(miss_all,       "diagnostics", "missingness_analytic.csv")
+export_csv(miss_full_cohort, "diagnostics", "missingness_analytic.csv")
 export_csv(waterfall,      "diagnostics", "exclusion_waterfall.csv")
-export_csv(delivery_rates, "tables",      "delivery_rates_by_hospital.csv")
-export_csv(delivery_by_day,"figures",     "delivery_rates_fig.csv")
+export_csv(delivery_rates, "diagnostics", "delivery_rates_by_hospital.csv")
+export_csv(delivery_by_day,"diagnostics", "delivery_rates_fig.csv")
+
+# SA: Delivery rates by vent day split by age group (<65 vs >=65)
+summarise_delivery_by_day <- function(df) {
+  df %>%
+    group_by(vent_day) %>%
+    summarise(
+      n_days            = n(),
+      rate_SAT_primary  = round(mean(SAT_delivered_primary  == 1 &
+                                       SAT_eligible == 1, na.rm = TRUE) * 100, 1),
+      rate_SAT_modified = round(mean(SAT_delivered_modified == 1 &
+                                       SAT_eligible == 1, na.rm = TRUE) * 100, 1),
+      rate_SBT_2min     = round(mean(SBT_delivered_2min == 1 &
+                                       SBT_eligible == 1, na.rm = TRUE) * 100, 1),
+      rate_SBT_5min     = round(mean(SBT_delivered_5min == 1 &
+                                       SBT_eligible == 1, na.rm = TRUE) * 100, 1),
+      .groups = "drop"
+    )
+}
+
+delivery_by_day_age_split <- bind_rows(
+  df_pp %>% filter(age <  65) %>% summarise_delivery_by_day() %>% mutate(age_group = "age_u65"),
+  df_pp %>% filter(age >= 65) %>% summarise_delivery_by_day() %>% mutate(age_group = "age_ge65")
+)
+export_csv(delivery_by_day_age_split, "diagnostics", "SA_age_split_delivery_rates_fig.csv")
+
+# Raw SAT/SBT delivery rates on eligible days by age group (<65 vs >=65)
+# Unadjusted -- for descriptive comparison only
+delivery_by_age_group <- bind_rows(
+  df_pp %>%
+    filter(SAT_eligible == 1) %>%
+    mutate(age_group = if_else(age >= 65, "age_ge65", "age_u65")) %>%
+    group_by(age_group) %>%
+    summarise(
+      trial           = "SAT",
+      n_eligible_days = n(),
+      n_delivered     = sum(SAT_delivered_primary == 1, na.rm = TRUE),
+      rate_pct        = round(mean(SAT_delivered_primary == 1, na.rm = TRUE) * 100, 1),
+      .groups = "drop"
+    ),
+  df_pp %>%
+    filter(SBT_eligible == 1) %>%
+    mutate(age_group = if_else(age >= 65, "age_ge65", "age_u65")) %>%
+    group_by(age_group) %>%
+    summarise(
+      trial           = "SBT",
+      n_eligible_days = n(),
+      n_delivered     = sum(SBT_delivered_2min == 1, na.rm = TRUE),
+      rate_pct        = round(mean(SBT_delivered_2min == 1, na.rm = TRUE) * 100, 1),
+      .groups = "drop"
+    )
+) %>%
+  select(trial, age_group, n_eligible_days, n_delivered, rate_pct)
+export_csv(delivery_by_age_group, "diagnostics", "SA_delivery_rates_by_age_group.csv")
 
 fig_delivery <- delivery_by_day %>%
   pivot_longer(cols = starts_with("rate_"),
@@ -1355,7 +1756,7 @@ fig_delivery <- delivery_by_day %>%
   ) +
   theme_abtrise()
 
-export_png(fig_delivery, "figures", "fig_delivery_rates.png")
+export_png(fig_delivery, "diagnostics", "fig_delivery_rates.png")
 
 cat("\nSetup complete. Objects available for analysis scripts:\n")
 cat("  df_pp, df_hosp, df_pp_raw, df_hosp_raw\n")

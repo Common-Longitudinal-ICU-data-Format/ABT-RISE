@@ -9,35 +9,17 @@
 #   ABTRISE_345_outcomes.R
 #   ABTRISE_06_benchmarking.R
 #
-# HOW TO RUN:
-#   Open this file and click Source (or run source("ABTRISE_02_criterion.R"))
-#   Setup runs automatically -- do NOT run ABTRISE_01_setup.R separately first.
-#
-# WHAT THIS SCRIPT PRODUCES:
-#   outputs/models/a2/    A2_SAT_metrics.csv, A2_SBT_metrics.csv,
-#                         A2_SAT_confusion_matrix.csv, A2_SBT_confusion_matrix.csv,
-#                         A2_sensitivity_metrics.csv,
-#                         A2_sensitivity_confusion_matrix.csv
-#   outputs/figures/a2/   fig_A2_metrics.png, A2_fig_metrics_data.csv,
-#                         A2_SAT_boot_dist.csv, A2_SBT_boot_dist.csv,
-#                         A2_sensitivity_boot_dist.csv
-#   outputs/diagnostics/  session_info_a2.txt (appended to setup diagnostics)
 #
 # ANALYSIS 2 DESIGN NOTES:
 #   - Denominator: eligible days only (SAT_eligible==1 / SBT_eligible==1)
-#     *** FLAG FOR TEAM: eligibility partly algorithm-derived -- confirm ***
-#   - Bootstrap: BCa, hospitalization-level clustering, B = 1,000 PILOT
-#     *** CHANGE B_BOOTSTRAP TO 10000L BEFORE SUBMISSION ***
+#   - Bootstrap: BCa, hospitalization-level clustering, B = 10,000
 #   - Metrics: sensitivity, specificity, PPV, NPV, accuracy, F1, MCC, kappa
-#   - MCC alongside F1 per Chicco & Jurman (BMC Genomics 2020): F1 ignores
-#     true negatives; MCC accounts for all four cells; preferred when class
-#     imbalance present (expected: most eligible days have no SAT/SBT)
 #   - SAT and SBT tested separately; each gated on flowsheet data availability
 #
 # COORDINATING CENTER: Rush
 # =============================================================================
 
-# --- Load setup (runs Sections 0-2 automatically) ----------------------------
+# --- Load setup
 source(here::here("code", "ABTRISE_01_setup_c.R"))
 
 cat("============================================================\n")
@@ -50,7 +32,7 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
   cat("  site_has_flowsheet_sbt = FALSE). Analysis 2 not run.\n")
   cat("  Placeholder output files will NOT be created -- CC expects no A2 outputs\n")
   cat("  from this site.\n\n")
-} else 
+} else {
 
   # ---------------------------------------------------------------------------
   # 2.0 BOOTSTRAP INFRASTRUCTURE
@@ -59,9 +41,7 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
   # Reference standard: nurse flowsheet (flowsheet_SAT / flowsheet_SBT)
   # Index test:         algorithm (SAT_delivered_primary / SBT_delivered_2min)
   # Cluster unit:       hospitalization_id (= IMV episode; first-episode cohort)
-  # B:                  1,000 FOR PILOT TESTING ONLY
-  #                     *** CHANGE TO 10,000 BEFORE SUBMISSION ***
-  #                     (Kuchen et al. 2025; Kang et al. 2024)
+  # B:                  10,000 
   # Metrics:            sensitivity, specificity, PPV, NPV, accuracy,
   #                     F1, MCC, Cohen's kappa
 
@@ -69,7 +49,6 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
 
   cat("Bootstrap configuration:\n")
   cat("  B =", B_BOOTSTRAP, "\n")
-  if (B_BOOTSTRAP < 10000L)
 
   cat("  Method: BCa (bias-corrected accelerated)\n")
   cat("  Cluster unit: hospitalization_id (= IMV episode)\n\n")
@@ -85,6 +64,12 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
     ref   <- ref[keep]
     idx   <- idx[keep]
     n     <- length(ref)
+    if (n == 0L) {
+      return(c(sensitivity = NA_real_, specificity = NA_real_,
+               PPV = NA_real_, NPV = NA_real_, accuracy = NA_real_,
+               F1 = NA_real_, MCC = NA_real_, kappa = NA_real_,
+               TP = 0L, TN = 0L, FP = 0L, FN = 0L, n_pairs = 0L))
+    }
 
     TP <- sum(ref == 1L & idx == 1L)
     TN <- sum(ref == 0L & idx == 0L)
@@ -99,10 +84,7 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
     f1       <- if ((2*TP + FP + FN) > 0)
                   (2 * TP) / (2*TP + FP + FN) else NA_real_
 
-    # MCC -- undefined if any marginal product = 0
-    # Cast to numeric before multiplication: 32-bit integer overflow occurs
-    # when TP/TN/FP/FN are large (product of four counts easily exceeds
-    # .Machine$integer.max = 2,147,483,647 at eligible-day scale)
+    
     TP_n <- as.numeric(TP); TN_n <- as.numeric(TN)
     FP_n <- as.numeric(FP); FN_n <- as.numeric(FN)
     mcc_denom <- sqrt((TP_n+FP_n) * (TP_n+FN_n) * (TN_n+FP_n) * (TN_n+FN_n))
@@ -135,7 +117,8 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
   # bias-correction z0 estimated from bootstrap distribution
   # Returns tibble with metric, estimate, ci_lo, ci_hi, n_bootstrap_valid
 
-  bca_ci <- function(boot_mat, obs_vals, metric_names, alpha = 0.05) {
+  bca_ci <- function(boot_mat, obs_vals, metric_names, alpha = 0.05,
+                     jack_mat = NULL) {
     purrr::map_dfr(metric_names, function(m) {
       obs   <- obs_vals[[m]]
       theta <- boot_mat[, m]
@@ -154,11 +137,21 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
       z0    <- qnorm(mean(theta < obs))
       if (!is.finite(z0)) z0 <- 0
 
-      # a-hat: acceleration via jackknife on the point estimates
-      # (jackknife on the metric value directly from the observed data)
-      # We approximate a-hat = 0 when jackknife is unstable
-      # (conservative -- equivalent to BC bootstrap without acceleration)
-      a_hat <- 0  # placeholder; full jackknife below
+      # jack_mat rows = jackknife replicates (one per cluster omitted)
+      a_hat <- 0  # fallback when jackknife unavailable or unstable
+      if (!is.null(jack_mat) && m %in% colnames(jack_mat)) {
+        jack_theta <- jack_mat[, m]
+        jack_theta <- jack_theta[is.finite(jack_theta)]
+        if (length(jack_theta) >= 3) {
+          jack_mean <- mean(jack_theta)
+          diff_j    <- jack_mean - jack_theta   # (mean - theta_(-i))
+          numer_j   <- sum(diff_j^3)
+          denom_j   <- sum(diff_j^2)
+          if (is.finite(denom_j) && denom_j > 0)
+            a_hat <- numer_j / (6 * denom_j^(3/2))
+          if (!is.finite(a_hat)) a_hat <- 0     # guard against NaN/Inf
+        }
+      }
 
       # BCa quantiles
       z_alpha_lo <- qnorm(alpha / 2)
@@ -182,10 +175,10 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
 
   # --- Core function: run A2 for one trial type -----------------------------
   # trial_label:  "SAT" or "SBT"
-  # ref_var:      name of flowsheet variable (string)
-  # idx_var:      name of algorithm variable (string)
-  # elig_var:     name of eligibility flag (string)
-  # sensitivity_label: label for output (e.g. "primary", "modified_SAT")
+  # ref_var:      flowsheet variable (string)
+  # idx_var:      algorithm variable (string)
+  # elig_var:     eligibility flag (string)
+  # sensitivity_label: label for output (i.e. "primary", "modified_SAT")
 
   run_a2_analysis <- function(trial_label, ref_var, idx_var,
                                elig_var, sensitivity_label = "primary",
@@ -200,13 +193,10 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
              !is.na(.data[[idx_var]])) %>%
       mutate(ref = as.integer(.data[[ref_var]]),
              idx = as.integer(.data[[idx_var]]))
-
     n_eligible    <- nrow(df_a2)
     n_hosp        <- n_distinct(df_a2$hospitalization_id)
-
     cat("    Eligible days (complete pairs):", n_eligible,
         "| Hospitalizations:", n_hosp, "\n")
-
     if (n_eligible < 20 | n_hosp < 5) {
       cat("    WARNING: Insufficient data to run bootstrap reliably\n")
       cat("    (need >= 20 eligible days and >= 5 hospitalizations).\n")
@@ -215,10 +205,8 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
 
     # --- Point estimates on observed data -----------------------------------
     obs <- compute_a2_metrics(df_a2$ref, df_a2$idx)
-
     metric_names <- c("sensitivity", "specificity", "PPV", "NPV",
                       "accuracy", "F1", "MCC", "kappa")
-
     cat("    Point estimates:\n")
     for (m in metric_names) {
       cat("     ", m, ":", round(obs[[m]], 4), "\n")
@@ -249,25 +237,20 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
     )
 
     # --- BCa Bootstrap ------------------------------------------------------
-    # Pre-index rows by hospitalization for fast lookup -- avoids per-rep
-    # filter() calls which are O(n*B) and stall on large datasets.
+  
     # Strategy: build a list where each element is the integer row indices
-    # for one hospitalization. Each rep samples IDs, retrieves row indices
+    # for one hospitalization - much faster than map_dfr. Each rep samples IDs, retrieves row indices
     # via list lookup, concatenates, and slices ref/idx vectors directly.
-    # At 7k+ hospitalizations x 1k reps this is ~100x faster than map_dfr.
-
+    
     hosp_ids   <- unique(df_a2$hospitalization_id)
     n_hosp_b   <- length(hosp_ids)
 
     # Build row-index lookup list (one entry per unique hospitalization)
     hosp_row_idx <- split(seq_len(nrow(df_a2)), df_a2$hospitalization_id)
-
     # Pre-extract ref/idx as plain vectors for fast indexing
     ref_vec <- df_a2$ref
     idx_vec <- df_a2$idx
-
     cat("    Running BCa bootstrap (B =", B_BOOTSTRAP, ")...\n")
-
     set.seed(20250402)  # reproducible; date-stamped
 
     boot_metrics <- matrix(NA_real_,
@@ -293,8 +276,21 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
 
     cat("    Bootstrap complete.\n")
 
+    # --- Leave-one-cluster-out jackknife for BCa acceleration (a-hat) -------
+    cat("    Computing jackknife replicates for BCa a-hat (n =",
+        n_hosp_b, "clusters)...\n")
+    jack_metrics <- matrix(NA_real_, nrow = n_hosp_b,
+                           ncol = length(metric_names),
+                           dimnames = list(NULL, metric_names))
+    for (j in seq_len(n_hosp_b)) {
+      jack_rows <- unlist(hosp_row_idx[hosp_ids[-j]], use.names = FALSE)
+      jm <- compute_a2_metrics(ref_vec[jack_rows], idx_vec[jack_rows])
+      for (m in metric_names) jack_metrics[j, m] <- jm[[m]]
+    }
+    cat("    Jackknife complete.\n")
+
     # --- BCa CIs ------------------------------------------------------------
-    ci_df <- bca_ci(boot_metrics, obs, metric_names)
+    ci_df <- bca_ci(boot_metrics, obs, metric_names, jack_mat = jack_metrics)
 
     # Attach trial/label info
     metrics_out <- ci_df %>%
@@ -305,9 +301,7 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
              n_eligible_days   = n_eligible,
              n_hospitalizations = n_hosp,
              B_bootstrap       = B_BOOTSTRAP,
-             bootstrap_note    = if (B_BOOTSTRAP < 10000L)
-               "PILOT: B < 10,000 -- rerun at B=10,000 before submission"
-               else "") %>%
+             bootstrap_note    = "") %>%
       select(trial, sensitivity_label, ref_var, idx_var, metric,
              estimate, ci_lo, ci_hi, n_boot_valid,
              n_eligible_days, n_hospitalizations, B_bootstrap,
@@ -423,6 +417,93 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
   }
 
   # ---------------------------------------------------------------------------
+  # 2.A AGE-STRATIFIED CRITERION VALIDITY
+  # ---------------------------------------------------------------------------
+  # Cutpoint: age < 65 vs. age >= 65
+  # Same metrics and BCa bootstrap as primary analysis
+
+  cat("-- 2.A Age-Stratified Criterion Validity (cutpoint: age 65)\n\n")
+
+  a2_age_results <- NULL
+  a2_age_cm      <- NULL
+  a2_age_boot    <- NULL
+
+  if (!"age" %in% names(df_pp)) {
+    cat("  SKIP: 'age' column not found in df_pp.\n")
+    cat("  Update variable name and rerun section 2.A.\n\n")
+  } else {
+
+    df_lt65 <- df_pp %>% filter(age <  65)
+    df_ge65 <- df_pp %>% filter(age >= 65)
+
+    n_hosp_lt65 <- n_distinct(df_lt65$hospitalization_id)
+    n_hosp_ge65 <- n_distinct(df_ge65$hospitalization_id)
+
+    cat("  Age < 65:  ", n_hosp_lt65, "hospitalizations,",
+        nrow(df_lt65), "vent days\n")
+    cat("  Age >= 65: ", n_hosp_ge65, "hospitalizations,",
+        nrow(df_ge65), "vent days\n\n")
+
+    age_list <- list()
+
+    if (site_has_flowsheet_sat) {
+      cat("  SAT: age < 65\n")
+      res_age_sat_lt <- run_a2_analysis(
+        trial_label       = "SAT",
+        ref_var           = "flowsheet_SAT",
+        idx_var           = "SAT_delivered_primary",
+        elig_var          = "SAT_eligible",
+        sensitivity_label = "age_lt65",
+        data              = df_lt65
+      )
+      age_list[["sat_lt65"]] <- res_age_sat_lt
+
+      cat("  SAT: age >= 65\n")
+      res_age_sat_ge <- run_a2_analysis(
+        trial_label       = "SAT",
+        ref_var           = "flowsheet_SAT",
+        idx_var           = "SAT_delivered_primary",
+        elig_var          = "SAT_eligible",
+        sensitivity_label = "age_ge65",
+        data              = df_ge65
+      )
+      age_list[["sat_ge65"]] <- res_age_sat_ge
+    }
+
+    if (site_has_flowsheet_sbt) {
+      cat("  SBT: age < 65\n")
+      res_age_sbt_lt <- run_a2_analysis(
+        trial_label       = "SBT",
+        ref_var           = "flowsheet_SBT",
+        idx_var           = "SBT_delivered_2min",
+        elig_var          = "SBT_eligible",
+        sensitivity_label = "age_lt65",
+        data              = df_lt65
+      )
+      age_list[["sbt_lt65"]] <- res_age_sbt_lt
+
+      cat("  SBT: age >= 65\n")
+      res_age_sbt_ge <- run_a2_analysis(
+        trial_label       = "SBT",
+        ref_var           = "flowsheet_SBT",
+        idx_var           = "SBT_delivered_2min",
+        elig_var          = "SBT_eligible",
+        sensitivity_label = "age_ge65",
+        data              = df_ge65
+      )
+      age_list[["sbt_ge65"]] <- res_age_sbt_ge
+    }
+
+    if (length(age_list) > 0) {
+      a2_age_results <- purrr::map_dfr(age_list, ~ .x$metrics)
+      a2_age_cm      <- purrr::map_dfr(age_list, ~ .x$confusion)
+      a2_age_boot    <- purrr::map_dfr(age_list, ~ .x$boot_dist)
+    }
+
+    cat("  Age-stratified analyses complete.\n\n")
+  }
+
+  # ---------------------------------------------------------------------------
   # 2.3 ANALYSIS 2 FIGURE
   # ---------------------------------------------------------------------------
   # Dot-and-CI plot: 8 metrics on y-axis, estimate + BCa CI on x
@@ -472,7 +553,7 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
         run_label = case_when(
           sensitivity_label == "primary"        ~ "Primary",
           sensitivity_label == "2S1_modified_SAT" ~ "Sensitivity: Modified SAT",
-          sensitivity_label == "2S2_2min_SBT"   ~ "Sensitivity: 2-min SBT",
+          sensitivity_label == "2S2_5min_SBT"   ~ "Sensitivity: 5-min SBT",
           TRUE ~ sensitivity_label
         )
       )
@@ -493,14 +574,14 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
                    position = position_dodge(width = 0.5)) +
         scale_color_manual(values = c(
           "Primary"                   = if (tr == "SAT") clr_sat else clr_sbt,
-          "Sensitivity: Modified SAT" = "#88CCEE",
-          "Sensitivity: 2-min SBT"   = "#DDAA33"
+          "Sensitivity: Modified SAT" = JAMA_COLORS[5],  # sage green
+          "Sensitivity: 5-min SBT"   = JAMA_COLORS[6]   # muted purple
         )) +
         scale_alpha_identity() +
         scale_shape_manual(values = c(
           "Primary"                   = 16,
           "Sensitivity: Modified SAT" = 17,
-          "Sensitivity: 2-min SBT"   = 17
+          "Sensitivity: 5-min SBT"   = 17
         )) +
         scale_x_continuous(limits = c(0, 1.05),
                            breaks = c(0, 0.25, 0.5, 0.75, 0.8, 0.9, 1.0),
@@ -515,11 +596,7 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
              caption  = paste0(
                "Reference standard: nurse flowsheet (", tr, ").\n",
                "Index test: algorithm (primary and sensitivity definitions).\n",
-               "Dotted lines at 0.80 and 0.90 for reference.\n",
-               if (B_BOOTSTRAP < 10000L)
-                 paste0("*** PILOT: BCa B=", B_BOOTSTRAP,
-                        " -- rerun at B=10,000 before submission ***")
-               else ""
+               "Dotted lines at 0.80 and 0.90 for reference."
              )) +
         theme_abtrise() +
         theme(panel.grid.minor = element_blank())
@@ -531,7 +608,7 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
       fig_A2 <- wrap_plots(fig_list_a2, ncol = 2)
     }
 
-    export_png(fig_A2, "figures/a2", "fig_A2_metrics.png",
+    export_png(fig_A2, "A2_criterion/figures", "fig_A2_metrics.png",
                width = if (length(panels_available) == 2) 14 else 8,
                height = 7)
 
@@ -540,6 +617,266 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
   } else {
     cat("  No figure data available (no flowsheet runs completed).\n\n")
     fig_A2 <- NULL
+  }
+
+  # --- 2.A figure: age-stratified dot-and-CI plot ---------------------------
+  # Key metrics only (sensitivity, specificity, PPV, NPV, kappa, MCC) to keep
+  # the panel readable. Color = age group; facet = trial (SAT | SBT).
+
+  age_metric_order  <- c("sensitivity", "specificity", "PPV", "NPV", "kappa", "MCC")
+  age_metric_labels <- c(sensitivity = "Sensitivity", specificity = "Specificity",
+                         PPV = "PPV", NPV = "NPV",
+                         kappa = "Cohen's Kappa", MCC = "MCC")
+  if (!is.null(a2_age_results)) 
+    # Pull full-cohort primary estimates to display alongside age groups so
+    # readers can see how each stratum compares to the overall result.
+    age_primary_rows <- bind_rows(
+      if (!is.null(a2_sat_results))
+        a2_sat_results %>% filter(sensitivity_label == "primary") else NULL,
+      if (!is.null(a2_sbt_results))
+        a2_sbt_results %>% filter(sensitivity_label == "primary") else NULL
+    ) %>% mutate(age_group_label = "Overall (full cohort)")
+
+    plot_data_age <- bind_rows(
+      age_primary_rows %>% rename(age_group_label_tmp = age_group_label),
+      a2_age_results %>% mutate(age_group_label_tmp = case_when(
+        sensitivity_label == "age_lt65" ~ "Age < 65",
+        sensitivity_label == "age_ge65" ~ "Age \u2265 65",
+        TRUE ~ sensitivity_label
+      ))
+    ) %>%
+      filter(metric %in% age_metric_order) %>%
+      mutate(
+        metric_f  = factor(metric, levels = rev(age_metric_order),
+                           labels = rev(age_metric_labels[age_metric_order])),
+        trial_f   = factor(trial, levels = c("SAT", "SBT")),
+        age_group = factor(age_group_label_tmp,
+                           levels = c("Overall (full cohort)",
+                                      "Age < 65", "Age \u2265 65"))
+      )
+    panels_age <- unique(as.character(plot_data_age$trial_f))
+
+    fig_list_age <- purrr::map(panels_age, function(tr) {
+      pd <- plot_data_age %>% filter(trial == tr)
+      ggplot(pd, aes(x = estimate, xmin = ci_lo, xmax = ci_hi,
+                     y = metric_f, color = age_group)) +
+        geom_vline(xintercept = c(0.8, 0.9), linetype = "dotted",
+                   color = "gray70", linewidth = 0.4) +
+        geom_errorbarh(height = 0.25, linewidth = 0.7,
+                       position = position_dodge(width = 0.6)) +
+        geom_point(aes(shape = age_group), size = 3,
+                   position = position_dodge(width = 0.6)) +
+        scale_color_manual(values = c(
+          "Overall (full cohort)" = JAMA_COLORS[1],  # dark slate
+          "Age < 65"              = JAMA_COLORS[5],  # sage green
+          "Age \u2265 65"         = JAMA_COLORS[2]   # muted orange
+        )) +
+        scale_shape_manual(values = c(
+          "Overall (full cohort)" = 15L,
+          "Age < 65"              = 16L,
+          "Age \u2265 65"         = 17L
+        )) +
+        scale_x_continuous(limits = c(0, 1.05),
+                           breaks = c(0, 0.25, 0.5, 0.75, 0.8, 0.9, 1.0),
+                           labels = c("0", "0.25", "0.50", "0.75",
+                                      "0.80", "0.90", "1.0")) +
+        labs(title    = paste0(tr, " Criterion Validity -- Overall and by Age Group"),
+             subtitle = "BCa bootstrap 95% CI | Eligible days only | Cutpoint: age 65 | Overall = full cohort",
+             x        = "Metric Value (0\u20131)",
+             y        = NULL,
+             color    = NULL,
+             shape    = NULL,
+             caption  = paste0(
+               "Reference standard: nurse flowsheet (", tr, ").\n",
+               "Index test: algorithm (primary definition).\n",
+               "Overall (square) = full cohort primary analysis; age groups are additional stratification.\n",
+               "Dotted lines at 0.80 and 0.90 for reference."
+             )) +
+        theme_abtrise() +
+        theme(panel.grid.minor = element_blank())
+    })
+
+    if (length(fig_list_age) == 1) {
+      fig_A2_age <- fig_list_age[[1]]
+    } else {
+      fig_A2_age <- wrap_plots(fig_list_age, ncol = 2)
+    }
+
+    export_png(fig_A2_age, "A2_criterion/figures", "fig_A2_age_stratified.png",
+               width = if (length(panels_age) == 2) 14 else 8,
+               height = 6)
+    cat("  Age-stratified figure exported.\n\n")
+
+  } 
+
+  # ---------------------------------------------------------------------------
+  # 2.3b ANALYSIS 2 CONFUSION MATRIX FIGURE
+  # Combined panel: 2x2 confusion matrix heatmap (left) + metric bar chart (right)
+  # One stacked row per available trial (SAT then SBT).
+  # Layout mirrors published criterion validity reporting conventions --
+  # see also MIRA (Ferber et al., Nature 2026), Figure 5d.
+  #
+  # Color conventions: uses existing clr_sat / clr_sbt palette (no changes).
+  #   Diagonal cells (TP, TN): full trial color, white text.
+  #   Off-diagonal cells (FP, FN): light tint of trial color, dark text.
+  # ---------------------------------------------------------------------------
+
+  cat("-- 2.3b Analysis 2 confusion matrix figure\n")
+
+  make_cm_panel <- function(cm_tbl, metrics_tbl, trial_label, trial_color) {
+    # cm_tbl:      one-row tibble with TP, TN, FP, FN columns
+    # metrics_tbl: output from run_a2_analysis()$metrics (primary label rows)
+    # trial_label: "SAT" or "SBT"
+    # trial_color: clr_sat or clr_sbt (existing palette -- do not override)
+
+    light_color <- adjustcolor(trial_color, alpha.f = 0.18)  # base R; no new pkg
+
+    # --- Left panel: 2x2 confusion matrix heatmap ----------------------------
+    # Row = flowsheet (reference standard); col = algorithm (index test)
+    # Positive = trial performed / delivered
+
+    cm_df <- tibble(
+      ref     = factor(
+        c("Delivered", "Delivered", "Not Delivered", "Not Delivered"),
+        levels = c("Delivered", "Not Delivered")
+      ),
+      idx     = factor(
+        c("Delivered", "Not Delivered", "Delivered", "Not Delivered"),
+        levels = c("Delivered", "Not Delivered")
+      ),
+      count   = as.integer(c(cm_tbl$TP, cm_tbl$FN, cm_tbl$FP, cm_tbl$TN)),
+      cell    = c("TP", "FN", "FP", "TN"),
+      on_diag = c(TRUE,  FALSE, FALSE, TRUE)
+    )
+
+    p_cm <- ggplot(cm_df,
+                   aes(x = idx, y = ref,
+                       fill = on_diag, color = on_diag)) +
+      geom_tile(linewidth = 1.5, color = "white") +
+      geom_text(
+        aes(label = paste0(cell, "\n", count)),
+        size = 5.5, fontface = "bold",
+        color = ifelse(cm_df$on_diag, "white", "gray25")
+      ) +
+      scale_fill_manual(
+        values = c("TRUE" = trial_color, "FALSE" = light_color),
+        guide  = "none"
+      ) +
+      scale_x_discrete(position = "top") +
+      scale_y_discrete(limits = rev(levels(cm_df$ref))) +
+      labs(
+        x        = paste0("Algorithm  \u2192"),
+        y        = paste0("\u2190  Flowsheet (Reference)"),
+        title    = paste0(trial_label, " Confusion Matrix"),
+        subtitle = paste0("Positive = trial delivered  |  n = ", cm_tbl$n_pairs,
+                          " eligible days, ", cm_tbl$n_hospitalizations,
+                          " hospitalizations")
+      ) +
+      theme_abtrise() +
+      theme(
+        axis.title.x    = element_text(face = "bold", size = 10,
+                                       margin = margin(b = 4)),
+        axis.title.y    = element_text(face = "bold", size = 10,
+                                       margin = margin(r = 4)),
+        axis.text       = element_text(size = 11),
+        panel.grid      = element_blank(),
+        panel.border    = element_blank(),
+        axis.ticks      = element_blank(),
+        plot.subtitle   = element_text(size = 9, color = "gray45")
+      )
+
+    # --- Right panel: metric bar chart with BCa CIs --------------------------
+    # Metrics to display and their display order (top to bottom matches MIRA fig)
+    bar_metric_order <- c("F1", "NPV", "sensitivity", "PPV", "specificity",
+                          "accuracy")
+    bar_metric_labels <- c(
+      F1          = "F1",
+      NPV         = "NPV",
+      sensitivity = "Recall",
+      PPV         = "Precision",
+      specificity = "Specificity",
+      accuracy    = "Accuracy"
+    )
+
+    plot_bar <- metrics_tbl %>%
+      filter(metric %in% bar_metric_order,
+             sensitivity_label == "primary") %>%
+      mutate(
+        metric_f = factor(metric,
+                          levels = rev(bar_metric_order),
+                          labels = rev(bar_metric_labels[bar_metric_order]))
+      )
+
+    p_bar <- ggplot(plot_bar,
+                    aes(x = estimate, xmin = ci_lo, xmax = ci_hi,
+                        y = metric_f)) +
+      geom_col(fill = trial_color, alpha = 0.80, width = 0.55) +
+      geom_errorbarh(height = 0.22, linewidth = 0.7, color = "gray30") +
+      geom_vline(xintercept = c(0.8, 0.9), linetype = "dotted",
+                 color = "gray65", linewidth = 0.4) +
+      scale_x_continuous(
+        limits = c(0, 1.05),
+        breaks = c(0, 0.25, 0.5, 0.75, 0.9, 1.0),
+        labels = c("0", "0.25", "0.50", "0.75", "0.90", "1.0"),
+        expand = expansion(mult = c(0, 0.02))
+      ) +
+      labs(
+        x        = "Observed value",
+        y        = NULL,
+        title    = "Criterion Validity Metrics",
+        subtitle = "BCa bootstrap 95% CI  |  dotted lines: 0.80, 0.90"
+      ) +
+      theme_abtrise() +
+      theme(
+        panel.grid.minor = element_blank(),
+        axis.text.y      = element_text(size = 10),
+        plot.subtitle    = element_text(size = 9, color = "gray45")
+      )
+
+    # --- Combine with patchwork (1:1.4 width ratio) --------------------------
+    p_cm + p_bar + plot_layout(widths = c(1, 1.4))
+  }
+
+  cm_panel_list <- list()
+
+  if (!is.null(a2_sat_cm) && !is.null(a2_sat_results)) {
+    cm_panel_list[["SAT"]] <- make_cm_panel(
+      cm_tbl      = a2_sat_cm,
+      metrics_tbl = a2_sat_results,
+      trial_label = "SAT",
+      trial_color = clr_sat
+    )
+    cat("  SAT confusion matrix panel built.\n")
+  }
+
+  if (!is.null(a2_sbt_cm) && !is.null(a2_sbt_results)) {
+    cm_panel_list[["SBT"]] <- make_cm_panel(
+      cm_tbl      = a2_sbt_cm,
+      metrics_tbl = a2_sbt_results,
+      trial_label = "SBT",
+      trial_color = clr_sbt
+    )
+    cat("  SBT confusion matrix panel built.\n")
+  }
+
+  if (length(cm_panel_list) > 0) {
+    fig_A2_cm <- wrap_plots(cm_panel_list, ncol = 1) +
+      plot_annotation(
+        caption = paste0(
+          "Reference standard: nurse flowsheet.  Index test: algorithm (primary definition).\n",
+          "Eligible days only.  Cluster bootstrap (BCa, B = ", B_BOOTSTRAP, ")."
+        ),
+        theme = theme(plot.caption = element_text(size = 8, color = "gray45",
+                                                  hjust = 0))
+      )
+
+    export_png(fig_A2_cm, "A2_criterion/figures", "fig_A2_confusion_matrix.png",
+               width  = 11,
+               height = if (length(cm_panel_list) == 2) 10 else 5.5)
+    cat("  Confusion matrix figure exported.\n\n")
+  } else {
+    cat("  No confusion matrix figure (no flowsheet data available).\n\n")
+    fig_A2_cm <- NULL
   }
 
   # ---------------------------------------------------------------------------
@@ -558,7 +895,7 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
     if (!is.null(a2_sbt_results)) a2_sbt_results else NULL
   )
   if (nrow(a2_primary_metrics) > 0)
-    export_csv(a2_primary_metrics, "models/a2", "A2_metrics.csv")
+    export_csv(a2_primary_metrics, "A2_criterion/models", "A2_metrics.csv")
 
   # Combined confusion matrix (one row per trial)
   a2_confusion <- bind_rows(
@@ -566,38 +903,49 @@ if (!site_has_flowsheet_sat & !site_has_flowsheet_sbt) {
     if (!is.null(a2_sbt_cm)) a2_sbt_cm else NULL
   )
   if (nrow(a2_confusion) > 0)
-    export_csv(a2_confusion, "models/a2", "A2_confusion_matrix.csv")
+    export_csv(a2_confusion, "A2_criterion/models", "A2_confusion_matrix.csv")
 
   # Combined sensitivity metrics (all sensitivity runs, both trials)
   if (!is.null(a2_sens_results))
-    export_csv(a2_sens_results, "models/a2", "A2_sensitivity_metrics.csv")
+    export_csv(a2_sens_results, "A2_criterion/models", "A2_sensitivity_metrics.csv")
 
   # Combined sensitivity confusion matrices
   a2_sens_confusion <- bind_rows(
     if (!is.null(a2_sens_cm)) a2_sens_cm else NULL
   )
   if (nrow(a2_sens_confusion) > 0)
-    export_csv(a2_sens_confusion, "models/a2", "A2_sensitivity_confusion_matrix.csv")
+    export_csv(a2_sens_confusion, "A2_criterion/models", "A2_sensitivity_confusion_matrix.csv")
 
   # Bootstrap distributions -- kept separate per trial (large files;
   # CC filters by trial column for pooling)
   if (!is.null(a2_sat_boot))
-    export_csv(a2_sat_boot, "figures/a2", "A2_SAT_boot_dist.csv")
+    export_csv(a2_sat_boot, "A2_criterion/figures", "A2_SAT_boot_dist.csv")
 
   if (!is.null(a2_sbt_boot))
-    export_csv(a2_sbt_boot, "figures/a2", "A2_SBT_boot_dist.csv")
+    export_csv(a2_sbt_boot, "A2_criterion/figures", "A2_SBT_boot_dist.csv")
 
   if (!is.null(a2_sens_boot))
-    export_csv(a2_sens_boot, "figures/a2", "A2_sensitivity_boot_dist.csv")
+    export_csv(a2_sens_boot, "A2_criterion/figures", "A2_sensitivity_boot_dist.csv")
 
-  # Combined figure data: all primary + sensitivity, both trials
+  # Age-stratified metrics and confusion matrices
+  if (!is.null(a2_age_results))
+    export_csv(a2_age_results, "A2_criterion/models", "A2_age_stratified_metrics.csv")
+
+  if (!is.null(a2_age_cm))
+    export_csv(a2_age_cm, "A2_criterion/models", "A2_age_stratified_confusion_matrix.csv")
+
+  if (!is.null(a2_age_boot))
+    export_csv(a2_age_boot, "A2_criterion/figures", "A2_age_stratified_boot_dist.csv")
+
+  # Combined figure data: all primary + sensitivity + age-stratified, both trials
   a2_all_fig_data <- bind_rows(
-    if (!is.null(a2_sat_results)) a2_sat_results else NULL,
-    if (!is.null(a2_sbt_results)) a2_sbt_results else NULL,
-    if (!is.null(a2_sens_results)) a2_sens_results else NULL
+    if (!is.null(a2_sat_results))  a2_sat_results  else NULL,
+    if (!is.null(a2_sbt_results))  a2_sbt_results  else NULL,
+    if (!is.null(a2_sens_results)) a2_sens_results else NULL,
+    if (!is.null(a2_age_results))  a2_age_results  else NULL
   )
   if (nrow(a2_all_fig_data) > 0)
-    export_csv(a2_all_fig_data, "figures/a2", "A2_fig_metrics_data.csv")
+    export_csv(a2_all_fig_data, "A2_criterion/figures", "A2_fig_metrics_data.csv")
 
   cat("\nAnalysis 2 complete.\n\n")
 
@@ -777,6 +1125,34 @@ d4_sbt <- df_pp %>% filter(SBT_eligible == 1) %>%
   calc_kappa_byday("flowsheet_SBT", "SBT_delivered_2min", "SBT")
 d4_combined <- bind_rows(d4_sat, d4_sbt)
 
+# Export D4 kappa-by-day data for CC aggregation
+export_csv(d4_combined, "A2_criterion/figures", "A2_D4_kappa_by_ventday_data.csv")
+
+# D4 age-stratified: kappa by ventilator day for age <65 and age >=65 --------
+if ("age" %in% names(df_pp)) {
+  d4_age_sat <- bind_rows(
+    df_pp %>% filter(SAT_eligible == 1, age <  65) %>%
+      calc_kappa_byday("flowsheet_SAT", "SAT_delivered_primary", "SAT") %>%
+      mutate(age_group = "age_lt65"),
+    df_pp %>% filter(SAT_eligible == 1, age >= 65) %>%
+      calc_kappa_byday("flowsheet_SAT", "SAT_delivered_primary", "SAT") %>%
+      mutate(age_group = "age_ge65")
+  )
+  d4_age_sbt <- bind_rows(
+    df_pp %>% filter(SBT_eligible == 1, age <  65) %>%
+      calc_kappa_byday("flowsheet_SBT", "SBT_delivered_2min", "SBT") %>%
+      mutate(age_group = "age_lt65"),
+    df_pp %>% filter(SBT_eligible == 1, age >= 65) %>%
+      calc_kappa_byday("flowsheet_SBT", "SBT_delivered_2min", "SBT") %>%
+      mutate(age_group = "age_ge65")
+  )
+  d4_age_combined <- bind_rows(d4_age_sat, d4_age_sbt)
+  export_csv(d4_age_combined, "A2_criterion/figures", "A2_D4_kappa_by_ventday_age_stratified_data.csv")
+  cat("D4 age-stratified kappa-by-ventday exported.\n\n")
+} else {
+  cat("  SKIP D4 age-stratified: 'age' column not found in df_pp.\n\n")
+}
+
 cat("SAT agreement by ventilator day:\n")
 print(as.data.frame(d4_sat))
 cat("\nSBT agreement by ventilator day:\n")
@@ -813,7 +1189,7 @@ fig_d4_combined <- fig_d4_kappa / fig_d4_rates
 
 print(fig_d4_combined)
 
-export_png(fig_d4_combined, "figures/a2", "fig_A2_D4_kappa_by_ventday.png",
+export_png(fig_d4_combined, "A2_criterion/figures", "fig_A2_D4_kappa_by_ventday.png",
            width = 8, height = 8)
 
 cat("D4 figure rendered to viewer and exported.\n\n")
@@ -989,7 +1365,6 @@ cat("  4. Are FP days clinically similar to TP days (D5)?\n\n")
 # Side-by-side comparison of eligible-day vs. all-vent-day denominators.
 # Purpose: documents why the two approaches produce different results and
 # confirms the SAP-specified eligible-day denominator is correct.
-# Useful for team presentations and methods transparency.
 # =============================================================================
 
 cat("-- D7: Denominator comparison -- eligible days vs. all vent days\n\n")
@@ -1073,12 +1448,17 @@ eligible_sbt <- if (!is.null(a2_sbt_results)) {
 } else NULL
 
 # Build comparison table
+# eligible_sat / eligible_sbt are NULL when that trial has no flowsheet data at
+# this site (e.g. MIMIC documents SBT only). Guard the select() so a NULL trial
+# is dropped from the comparison rather than erroring; bind_rows() skips NULLs.
+.denom_cols <- c("trial", "denominator", "n_days", "TP", "TN", "FP", "FN",
+                 "sensitivity", "specificity", "PPV", "NPV", "F1", "MCC", "kappa")
+.pick_denom <- function(x) if (is.null(x)) NULL else x %>% select(all_of(.denom_cols))
+
 denom_compare <- bind_rows(
-  eligible_sat %>% select(trial, denominator, n_days, TP, TN, FP, FN,
-                           sensitivity, specificity, PPV, NPV, F1, MCC, kappa),
+  .pick_denom(eligible_sat),
   allday_sat,
-  eligible_sbt %>% select(trial, denominator, n_days, TP, TN, FP, FN,
-                           sensitivity, specificity, PPV, NPV, F1, MCC, kappa),
+  .pick_denom(eligible_sbt),
   allday_sbt
 ) %>%
   arrange(trial, denominator)
@@ -1123,7 +1503,135 @@ cat("NOTE: The SAP pre-specifies eligible days as the correct denominator.\n")
 
 
 # Export comparison table
-export_csv(denom_compare, "models/a2", "A2_denominator_comparison.csv")
+export_csv(denom_compare, "A2_criterion/models", "A2_denominator_comparison.csv")
+
+# =============================================================================
+# D8: AGE-STRATIFIED CRITERION VALIDITY SUMMARY
+# =============================================================================
+# Compares key metrics between age < 65 and age >= 65 subgroups.
+# Prints to console only; formal outputs in A2_age_stratified_metrics.csv.
+# =============================================================================
+
+cat("-- D8: Age-stratified criterion validity summary (cutpoint: age 65)\n\n")
+
+if (!exists("a2_age_results") || is.null(a2_age_results)) {
+  cat("  SKIP: Age-stratified results not available (section 2.A not run or\n")
+  cat("  'age' column not found in df_pp).\n\n")
+} else {
+
+  focus_metrics <- c("sensitivity", "specificity", "PPV", "NPV", "kappa", "MCC")
+
+  # Combine overall (full cohort) with age-stratified rows so the table
+  # shows all three groups side by side.
+  d8_overall <- bind_rows(
+    if (!is.null(a2_sat_results))
+      a2_sat_results %>% filter(sensitivity_label == "primary") else NULL,
+    if (!is.null(a2_sbt_results))
+      a2_sbt_results %>% filter(sensitivity_label == "primary") else NULL
+  ) %>% mutate(age_group = "overall")
+
+  d8_table <- bind_rows(
+    d8_overall,
+    a2_age_results %>% mutate(age_group = case_when(
+      sensitivity_label == "age_lt65" ~ "age_lt65",
+      sensitivity_label == "age_ge65" ~ "age_ge65",
+      TRUE ~ sensitivity_label
+    ))
+  ) %>%
+    filter(metric %in% focus_metrics) %>%
+    mutate(ci_str = sprintf("%.3f [%.3f, %.3f]", estimate, ci_lo, ci_hi)) %>%
+    select(trial, metric, age_group, estimate, ci_lo, ci_hi, ci_str,
+           n_eligible_days, n_hospitalizations)
+
+  # Wide format: one row per trial x metric, columns for all three groups
+  d8_wide <- d8_table %>%
+    select(trial, metric, age_group, ci_str, n_eligible_days) %>%
+    pivot_wider(names_from  = age_group,
+                values_from = c(ci_str, n_eligible_days),
+                names_sep   = "_")
+
+  cat("Key metrics by group (estimate [95% BCa CI]):\n\n")
+  for (tr in c("SAT", "SBT")) {
+    tbl_tr <- d8_wide %>% filter(trial == tr)
+    if (nrow(tbl_tr) == 0) next
+    cat(tr, ":\n")
+    cols_present <- intersect(
+      c("metric", "ci_str_overall", "ci_str_age_lt65", "ci_str_age_ge65"),
+      names(tbl_tr)
+    )
+    print(as.data.frame(tbl_tr %>%
+      select(all_of(cols_present)) %>%
+      rename_with(~ c("Metric", "Overall", "Age < 65", "Age >= 65")[
+        match(.x, c("metric", "ci_str_overall",
+                    "ci_str_age_lt65", "ci_str_age_ge65"))
+      ])))
+    cat("\n")
+  }
+
+  # Plain-language interpretation
+  cat("Interpretation:\n\n")
+  for (tr in c("SAT", "SBT")) {
+    for (met in c("sensitivity", "kappa")) {
+      ov_row <- d8_table %>% filter(trial == tr, metric == met,
+                                     age_group == "overall")
+      lt_row <- d8_table %>% filter(trial == tr, metric == met,
+                                     age_group == "age_lt65")
+      ge_row <- d8_table %>% filter(trial == tr, metric == met,
+                                     age_group == "age_ge65")
+      if (nrow(lt_row) == 0 || nrow(ge_row) == 0) next
+
+      diff_est <- lt_row$estimate - ge_row$estimate
+      # Approximate non-overlap: CI of one excludes point estimate of other
+      ci_overlap <- !is.na(lt_row$ci_lo) && !is.na(ge_row$estimate) &&
+                    !is.na(ge_row$ci_lo) && !is.na(lt_row$estimate) &&
+                    lt_row$ci_lo <= ge_row$estimate &&
+                    ge_row$ci_lo <= lt_row$estimate
+
+      cat(tr, met, ":\n")
+      if (nrow(ov_row) > 0)
+        cat("  Overall:", round(ov_row$estimate, 3), " | ")
+      cat("Age < 65:", round(lt_row$estimate, 3),
+          " | Age >= 65:", round(ge_row$estimate, 3),
+          " | Difference:", round(diff_est, 3), "\n")
+      if (!ci_overlap) {
+        cat("  -> CIs do NOT overlap: meaningful age-group difference detected.\n")
+        cat("     Consider reporting age-stratified results in supplementary materials.\n")
+      } else {
+        cat("  -> CIs overlap: no clear age-group difference in", met, ".\n")
+      }
+    }
+  }
+  cat("\n")
+
+  # Flowsheet completion by age group (check for differential documentation)
+  if ("age" %in% names(df_pp)) {
+    cat("Flowsheet completion by age group (eligible days):\n")
+    d8_completion <- bind_rows(
+      df_pp %>%
+        filter(SAT_eligible == 1) %>%
+        mutate(age_group = if_else(age < 65, "age_lt65", "age_ge65")) %>%
+        group_by(trial = "SAT", age_group) %>%
+        summarise(n_eligible = n(),
+                  n_hosp     = n_distinct(hospitalization_id),
+                  pct_fs_sat = round(mean(!is.na(flowsheet_SAT)) * 100, 1),
+                  .groups    = "drop") %>%
+        rename(pct_fs_completed = pct_fs_sat),
+      df_pp %>%
+        filter(SBT_eligible == 1) %>%
+        mutate(age_group = if_else(age < 65, "age_lt65", "age_ge65")) %>%
+        group_by(trial = "SBT", age_group) %>%
+        summarise(n_eligible = n(),
+                  n_hosp     = n_distinct(hospitalization_id),
+                  pct_fs_sbt = round(mean(!is.na(flowsheet_SBT)) * 100, 1),
+                  .groups    = "drop") %>%
+        rename(pct_fs_completed = pct_fs_sbt)
+    )
+    print(as.data.frame(d8_completion))
+    cat("\n")
+    cat("NOTE: Large differences in flowsheet completion between age groups would\n")
+    cat("indicate age-differential documentation bias in the reference standard.\n\n")
+  }
+}
 
 # Session info ----------------------------------------------------------------
 writeLines(capture.output(sessionInfo()),
