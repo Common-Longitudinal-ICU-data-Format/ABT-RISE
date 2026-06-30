@@ -458,12 +458,12 @@ run_a6_ccc <- function(trial_label, alg_var, flowsheet_var,
     trial          = trial_label,
     alg_var        = alg_var,
     flowsheet_var  = flowsheet_var,
-    n_hospitals    = n_hosp_fs,
-    CCC            = round(ccc_result$rho.c$est,  4),
-    CCC_lo         = round(ccc_result$rho.c$lower, 4),
-    CCC_hi         = round(ccc_result$rho.c$upper, 4),
-    pearson_r      = round(ccc_result$r,           4),
-    cb_coef        = round(ccc_result$C.b,         4),
+    n_hospitals    = as.integer(n_hosp_fs),
+    CCC            = as.numeric(ccc_result$rho.c$est[1]),    # as.numeric([1]): force scalar;
+    CCC_lo         = as.numeric(ccc_result$rho.c$lower[1]),  # epiR version differences can return
+    CCC_hi         = as.numeric(ccc_result$rho.c$upper[1]),  # named numeric, 1-row df, or list --
+    pearson_r      = as.numeric(ccc_result$r[1]),            # any of these stored in a tibble col
+    cb_coef        = as.numeric(ccc_result$C.b[1]),          # becomes a list col write_csv rejects
     mean_diff      = round(mean(hosp_rates$rate_alg -
                                   hosp_rates$rate_flowsheet), 4),
     sd_diff        = round(sd(hosp_rates$rate_alg -
