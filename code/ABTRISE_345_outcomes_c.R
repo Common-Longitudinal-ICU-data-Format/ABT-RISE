@@ -533,9 +533,11 @@ cat("\n")
 cat("-- 3.6 Exporting Analysis 3 outputs\n")
 
 export_csv(
-  tidy_dt_primary %>% mutate(model = "A3_primary_discrete_time",
-                             warnings = paste(fit_dt_primary_warnings,
-                                              collapse = "; ")),
+  tidy_dt_primary %>% mutate(model       = "A3_primary_discrete_time",
+                             warnings    = paste(fit_dt_primary_warnings,
+                                              collapse = "; "),
+                             single_hosp = single_hospital,
+                             n_hospitals = n_hospitals),
   "A3_tte_outcomes/models", "A3_dt_primary_coefs.csv"
 )
 
@@ -988,14 +990,18 @@ cat("\n")
 cat("-- 4.5 Exporting Analysis 4 outputs\n")
 
 export_csv(
-  tidy_a4p1 %>% mutate(model    = "A4_part1_alive28d",
-                       warnings = paste(fit_a4p1_warnings, collapse = "; ")),
+  tidy_a4p1 %>% mutate(model       = "A4_part1_alive28d",
+                       warnings    = paste(fit_a4p1_warnings, collapse = "; "),
+                       single_hosp = single_hospital,
+                       n_hospitals = n_hospitals),
   "A4_VFD_outcomes/models", "A4_part1_alive28d_coefs.csv"
 )
 
 export_csv(
-  tidy_a4p2 %>% mutate(model    = "A4_part2_VFD_survivors",
-                       warnings = paste(fit_a4p2_warnings, collapse = "; ")),
+  tidy_a4p2 %>% mutate(model       = "A4_part2_VFD_survivors",
+                       warnings    = paste(fit_a4p2_warnings, collapse = "; "),
+                       single_hosp = single_hospital,
+                       n_hospitals = n_hospitals),
   "A4_VFD_outcomes/models", "A4_part2_vfd_survivors_coefs.csv"
 )
 
@@ -1492,8 +1498,10 @@ cat("\n")
 cat("-- 5.4 Exporting Analysis 5 outputs\n")
 
 export_csv(
-  tidy_a5_los %>% mutate(model    = "A5_ICU_LOS_ZTNB",
-                         warnings = paste(fit_a5los_warnings, collapse = "; ")),
+  tidy_a5_los %>% mutate(model       = "A5_ICU_LOS_ZTNB",
+                         warnings    = paste(fit_a5los_warnings, collapse = "; "),
+                         single_hosp = single_hospital,
+                         n_hospitals = n_hospitals),
   "A5_mort_outcomes/models", "A5_icu_los_coefs.csv"
 )
 
@@ -1503,8 +1511,10 @@ export_csv(
 )
 
 export_csv(
-  tidy_a5_mort %>% mutate(model    = "A5_mortality_logistic",
-                          warnings = paste(fit_a5mort_warnings, collapse = "; ")),
+  tidy_a5_mort %>% mutate(model       = "A5_mortality_logistic",
+                          warnings    = paste(fit_a5mort_warnings, collapse = "; "),
+                          single_hosp = single_hospital,
+                          n_hospitals = n_hospitals),
   "A5_mort_outcomes/models", "A5_mortality_coefs.csv"
 )
 
