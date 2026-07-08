@@ -18,7 +18,6 @@
 #                                          A6_icc_patient_diagnostic.csv,
 #                                          A6_hospital_aggregate_summary.csv,
 #                                          A6_SAT_ccc_results.csv, A6_SBT_ccc_results.csv [if flowsheet]
-#                                          A6_fit_*.rds
 #   outputs/A6_benchmark_outcomes/figures/  fig_A6_SAT_caterpillar.png, fig_A6_SBT_caterpillar.png,
 #                                          fig_A6_SAT_funnel.png, fig_A6_SBT_funnel.png,
 #                                          fig_A6_SAT_ranked_hospitals.png, fig_A6_SBT_ranked_hospitals.png,
@@ -758,10 +757,6 @@ export_csv(
   bind_rows(a6_sat$icc_patient, a6_sbt$icc_patient),
   "A6_benchmark_outcomes/models", "A6_icc_patient_diagnostic.csv"
 )
-
-# RDS model objects
-export_rds(a6_sat$fit, "A6_benchmark_outcomes/models", "A6_fit_SAT_glmm.rds")
-export_rds(a6_sbt$fit, "A6_benchmark_outcomes/models", "A6_fit_SBT_glmm.rds")
 
 # --- Track 2: Hospital aggregate summary (CC pooled model input) -----------
 export_csv(hosp_summary_all, "A6_benchmark_outcomes/models", "A6_hospital_aggregate_summary.csv")

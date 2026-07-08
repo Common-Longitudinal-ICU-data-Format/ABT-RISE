@@ -121,12 +121,6 @@ export_csv <- function(df, subfolder, filename) {
   cat("  Exported:", file.path(subfolder, prefix_file(filename)), "\n")
 }
 
-export_rds <- function(obj, subfolder, filename) {
-  path <- file.path(out_dir, subfolder, prefix_file(filename))
-  saveRDS(obj, path)
-  cat("  Exported:", file.path(subfolder, prefix_file(filename)), "\n")
-}
-
 export_png <- function(plot_obj, subfolder, filename, width = 10, height = 6) {
   path <- file.path(out_dir, subfolder, prefix_file(filename))
   ggsave(path, plot = plot_obj, width = width, height = height,
@@ -1773,7 +1767,7 @@ cat("  df_pp, df_hosp, df_pp_raw, df_hosp_raw\n")
 cat("  waterfall, log_step, n_hospitals, single_hospital, re_hosp\n")
 cat("  covariates_baseline, covariates_tv, covariates_mean, covariates_a6\n")
 cat("  site_has_flowsheet_sat, site_has_flowsheet_sbt\n")
-cat("  export_csv, export_rds, export_png, prefix_file, drop_single_level\n")
+cat("  export_csv, export_png, prefix_file, drop_single_level\n")
 cat("  out_dir, site_id\n")
 cat("  Derived flags: df_hosp$age_u65 (age < 65), df_pp$NEE_prior (binary recode)\n")
 cat("  Shared palette: clr_sat, clr_sbt, clr_trial, clr_4grp\n")

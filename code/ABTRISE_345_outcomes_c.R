@@ -16,16 +16,16 @@
 #   outputs/A3_tte_outcomes/models/   A3_dt_primary_coefs.csv, A3_dt_primary_re_variance.csv,
 #                                    A3_cox_secondary_coefs.csv, A3_fg_secondary_coefs.csv,
 #                                    A3_fg_cumulative_incidence.csv, A3_sensitivity_coefs.csv,
-#                                    SA_age65_A3_dt_coefs.csv, A3_fit_*.rds
+#                                    SA_age65_A3_dt_coefs.csv
 #   outputs/A3_tte_outcomes/figures/  fig_A3_dt_forest.png, A3_fig_cif_curves.csv
 #   outputs/A4_VFD_outcomes/models/   A4_part1_alive28d_coefs.csv, A4_part2_vfd_survivors_coefs.csv,
 #                                    A4_vfd28_descriptive.csv, A4_sensitivity_coefs.csv,
-#                                    SA_age65_A4_coefs.csv, A4_fit_*.rds
+#                                    SA_age65_A4_coefs.csv
 #   outputs/A4_VFD_outcomes/tables/   vfd28_descriptive.csv
 #   outputs/A4_VFD_outcomes/figures/  fig_A4_twopart.png, A4_fig_vfd_distribution.csv
 #   outputs/A5_mort_outcomes/models/  A5_icu_los_coefs.csv, A5_icu_los_overdispersion.csv,
 #                                    A5_mortality_coefs.csv, A5_sensitivity_coefs.csv,
-#                                    SA_age65_A5_coefs.csv, A5_fit_*.rds
+#                                    SA_age65_A5_coefs.csv
 #   outputs/A5_mort_outcomes/figures/ fig_A5_los_mortality.png, A5_fig_los_distribution.csv
 #   outputs/diagnostics/              fig_adj_comparison.png, fig_adj_comparison_data.csv,
 #                                    session_info_a345.txt
@@ -573,10 +573,6 @@ export_csv(
   "A3_tte_outcomes/models", "A3_sensitivity_coefs.csv"
 )
 
-export_rds(fit_dt_primary, "A3_tte_outcomes/models", "A3_fit_dt_primary.rds")
-export_rds(fit_cox,        "A3_tte_outcomes/models", "A3_fit_cox_secondary.rds")
-export_rds(fit_fg,         "A3_tte_outcomes/models", "A3_fit_fg_secondary.rds")
-
 # --- 3.7 Patient-only GLM (no hospital RE) -- adjustment comparison input -----
 # Fits the same discrete-time model without the hospital random intercept.
 # Used exclusively by the Section 7 adjustment comparison figure.
@@ -1024,9 +1020,6 @@ export_csv(
   results_4_sensitivity %>% mutate(analysis = "A4"),
   "A4_VFD_outcomes/models", "A4_sensitivity_coefs.csv"
 )
-
-export_rds(fit_a4_part1, "A4_VFD_outcomes/models", "A4_fit_part1_alive28d.rds")
-export_rds(fit_a4_part2, "A4_VFD_outcomes/models", "A4_fit_part2_VFD_survivors.rds")
 
 # --- 4.6 Patient-only GLMs (no hospital RE) -- adjustment comparison input ----
 
@@ -1527,9 +1520,6 @@ export_csv(
   los_percentiles,
   "A5_mort_outcomes/figures", "A5_fig_los_distribution.csv"
 )
-
-export_rds(fit_a5_los,  "A5_mort_outcomes/models", "A5_fit_ICU_LOS_ZTNB.rds")
-export_rds(fit_a5_mort, "A5_mort_outcomes/models", "A5_fit_mortality_logistic.rds")
 
 # --- 5.5 Patient-only GLMs (no hospital RE) -- adjustment comparison input ----
 
