@@ -39,6 +39,12 @@
 # the repo root via ABTRISE_config.R. Sites edit clif_config.json only --
 # no edits needed in this file.
 
+# `here` is needed to locate config.R below, which then defines ensure_packages()
+# for the rest of the pipeline. Bootstrap it first (runs under --vanilla, so pass
+# an explicit CRAN mirror).
+if (!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here", repos = "https://cloud.r-project.org")
+}
 suppressPackageStartupMessages(library(here))
 source(here::here("code", "ABTRISE_config.R"))
 

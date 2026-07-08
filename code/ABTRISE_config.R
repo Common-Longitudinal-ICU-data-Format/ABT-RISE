@@ -10,6 +10,32 @@
 # Sites: edit clif_config.json at repo root. No edits needed in R code.
 # =============================================================================
 
+# --- Auto-install helper -----------------------------------------------------
+# The pipeline runs under `Rscript --vanilla`, so no CRAN mirror is set by
+# default (getOption("repos") is the unresolved "@CRAN@" placeholder); pass one
+# explicitly. Installs only the missing packages -- base packages such as
+# `splines` are already present and skipped -- then verifies and fails loudly
+# with an actionable message if an install could not succeed.
+ensure_packages <- function(pkgs, repos = "https://cloud.r-project.org") {
+  missing <- setdiff(pkgs, rownames(installed.packages()))
+  if (length(missing) > 0) {
+    message("Installing missing R package(s): ", paste(missing, collapse = ", "))
+    install.packages(missing, repos = repos)
+  }
+  still_missing <- setdiff(pkgs, rownames(installed.packages()))
+  if (length(still_missing) > 0) {
+    stop("Could not install R package(s): ", paste(still_missing, collapse = ", "),
+         ".\n  Check internet access / build tools, or install manually with ",
+         "install.packages(c(",
+         paste0('"', still_missing, '"', collapse = ", "), ")).",
+         call. = FALSE)
+  }
+}
+
+# config.R is sourced before anything else on every path, so bootstrap its own
+# dependencies here before the fail-fast library() calls below.
+ensure_packages(c("here", "jsonlite"))
+
 suppressPackageStartupMessages({
   library(here)
   library(jsonlite)

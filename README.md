@@ -50,13 +50,15 @@ Patients on invasive mechanical ventilation (IMV) at any point during a hospital
 - **R** 4.x with `Rscript` on PATH (optional — see RStudio fallback below).
 - CLIF parquet tables at the path in `data_directory`.
 
-R packages (installed once in R):
+R packages: the pipeline **auto-installs** any missing packages from CRAN on
+first run (via `ensure_packages()` in `code/ABTRISE_config.R`), so no manual
+step is normally required. If a machine is offline, install them once manually:
 
 ```r
 install.packages(c("here","jsonlite","arrow","dplyr","tidyr","stringr",
                    "ggplot2","patchwork","readr","lme4","glmmTMB",
-                   "survival","tidycmprsk","epiR","blandr","splines",
-                   "broom","broom.mixed","purrr","scales","forcats"))
+                   "survival","tidycmprsk","epiR","blandr",
+                   "broom","broom.mixed","purrr","scales","forcats","flextable"))
 ```
 
 ## Running the pipeline

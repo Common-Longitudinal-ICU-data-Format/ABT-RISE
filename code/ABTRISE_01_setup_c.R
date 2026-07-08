@@ -47,6 +47,16 @@ if (!exists("site_id") || !exists("data_dir") || !exists("out_dir")) {
 # SECTION 1: LIBRARIES, HELPERS, OUTPUT FOLDERS
 # =============================================================================
 
+# ensure_packages() is defined in ABTRISE_config.R, which is always sourced
+# before this block (by run_all.R, or by the fallback at lines 41-44 above).
+# Install any missing packages before the fail-fast library() calls below.
+# `splines` is base R (ships with R) and is intentionally omitted.
+ensure_packages(c(
+  "here", "arrow", "dplyr", "tidyr", "stringr", "lme4", "glmmTMB",
+  "survival", "tidycmprsk", "broom.mixed", "broom", "readr", "ggplot2",
+  "patchwork", "purrr", "scales", "epiR", "blandr", "forcats", "flextable"
+))
+
 suppressPackageStartupMessages({
   library(here)
   library(arrow)        # read_parquet
