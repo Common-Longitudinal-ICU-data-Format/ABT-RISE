@@ -20,7 +20,7 @@
 # =============================================================================
 
 # --- Load setup
-source(here::here("ABTRISE_01_setup_c.R"))
+source(here::here("code", "ABTRISE_01_setup_c.R"))
 
 cat("============================================================\n")
 cat("ANALYSIS 2: Criterion Validity\n")
