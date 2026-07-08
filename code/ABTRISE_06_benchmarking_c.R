@@ -644,13 +644,13 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
   # Join hospital_type from df_pp (available in global scope from setup)
   hosp_type_lkp <- df_pp %>%
     group_by(hospital_id) %>%
-    summarise(hospital_type = first(as.character(hospital_type)),
+    summarise(hospital_type = tolower(first(as.character(hospital_type))),
               .groups = "drop")
 
   ranking_data <- blup_df %>%
     left_join(hosp_type_lkp, by = "hospital_id") %>%
     mutate(
-      hospital_type = replace_na(hospital_type, "Unknown"),
+      hospital_type = replace_na(hospital_type, "unknown"),
       rank          = rank(raw_rate, ties.method = "first"),
       hosp_label    = paste0("H", rank)
     ) %>%
@@ -663,10 +663,10 @@ build_a6_figures <- function(trial_label, blup_df, re_stats) {
   # Hospital type color scale: reuse JAMA palette subsets without touching
   # clr_sat / clr_sbt (trial colors). Academic=red, Community=blue, Other=gray.
   hosp_type_vals <- c(
-    "Academic" = JAMA_COLORS[4],  # muted red
-    "Community"= JAMA_COLORS[3],  # JAMA blue
-    "Unknown"  = JAMA_COLORS[7],  # warm gray
-    "Other"    = JAMA_COLORS[7]
+    "academic"  = JAMA_COLORS[4],  # muted red
+    "community" = JAMA_COLORS[3],  # JAMA blue
+    "unknown"   = JAMA_COLORS[7],  # warm gray
+    "other"     = JAMA_COLORS[7]
   )
 
   fig_ranking <- ggplot(
