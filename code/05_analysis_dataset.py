@@ -102,7 +102,11 @@ def _(
             )
 
         prepped = (
-            wf.sort(["hospitalization_id", "recorded_dttm"])
+            # Null timestamps have no position on the timeline and cannot take
+            # part in the forward consensus windows (t + window); drop them so the
+            # state machine never does `None + timedelta`.
+            wf.filter(pl.col("recorded_dttm").is_not_null())
+            .sort(["hospitalization_id", "recorded_dttm"])
             .with_columns(pl.col("device_category").str.to_lowercase().alias("_dev_lc"))
             .with_columns(
                 (pl.col("_dev_lc") == "imv").cast(pl.Int8).alias("_is_imv"),
