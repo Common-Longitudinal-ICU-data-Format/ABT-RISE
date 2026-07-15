@@ -19,7 +19,7 @@ def _():
     import json
     from pathlib import Path
     from tqdm import tqdm
-    from helper import plot_consort, plot_upset
+    from helper import get_daily_sofa, plot_consort, plot_upset
 
     # Read site-specific config (site name, paths, etc.)
     _config_path = Path(__file__).parent.parent / "clif_config.json"
@@ -29,6 +29,7 @@ def _():
     SITE_NAME = _cfg["site_name"]
     DATA_DIR = _cfg["data_directory"]
     TIMEZONE = _cfg.get("timezone", None)
+    SOFA_BATCH_SIZE = int(_cfg.get("sofa_batch_size", 10_000))
     OUTPUT_PHI = Path(__file__).parent.parent / "output_phi"
     OUTPUT_SBT = OUTPUT_PHI / "sbt_both_stabilities"        # row-level PHI data
     OUTPUT_SBT.mkdir(parents=True, exist_ok=True)
@@ -45,7 +46,9 @@ def _():
         OUTPUT_SHARE,
         Path,
         SITE_NAME,
+        SOFA_BATCH_SIZE,
         TIMEZONE,
+        get_daily_sofa,
         json,
         np,
         pd,
@@ -466,7 +469,7 @@ def _(cohort_elig, np, pl, tqdm):
 
 
 @app.cell
-def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, sbt_flag_cols, vent_eligible):
+def _(DATA_DIR, OUTPUT_PHI, Path, SOFA_BATCH_SIZE, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, get_daily_sofa, pl, sbt_flag_cols, vent_eligible):
     cohort_with_delivery = vent_eligible
 
     # Aggregate: for each hosp_id_icu_day, take the MAX of each flag column
@@ -613,7 +616,6 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
 
     # ── Enrich with demographics, priors, and outcome ──
     from clifpy.utils.comorbidity import calculate_cci
-    from clifpy.utils.sofa_polars import compute_sofa_polars
 
     # Map hosp_id_icu_day → hospitalization_id + icu_day + icu_day_date
     _key_map = (
@@ -648,7 +650,7 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
         calculate_cci(_dx, hierarchy=True)
     ).select("hospitalization_id", "cci_score")
 
-    # SOFA — worst per vent-day, then shift to prior day
+    # SOFA — worst per ICU calendar day, then shift to prior day
     _day_cohort = (
         df.select("hosp_id_icu_day", "hospitalization_id", "icu_day_date")
         .unique(subset=["hosp_id_icu_day"])
@@ -657,16 +659,14 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
             (pl.col("icu_day_date") + pl.duration(days=1)).alias("end_dttm"),
         )
     )
-    _daily_sofa = compute_sofa_polars(
+    _daily_sofa = get_daily_sofa(
         data_directory=DATA_DIR,
-        cohort_df=_day_cohort,
-        filetype="parquet",
-        id_name="hosp_id_icu_day",
-        extremal_type="worst",
-        fill_na_scores_with_zero=True,
-        remove_outliers=True,
+        day_cohort=_day_cohort,
+        cache_path=OUTPUT_PHI / "daily_sofa.parquet",
+        source_path=OUTPUT_PHI / "wide_dataset.parquet",
         timezone=TIMEZONE,
-    ).select("hosp_id_icu_day", "sofa_total")
+        batch_size=SOFA_BATCH_SIZE,
+    )
 
     _sofa_with_day = _daily_sofa.join(
         df.select("hosp_id_icu_day", "hospitalization_id", "icu_day")

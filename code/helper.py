@@ -1,8 +1,107 @@
+import gc
 from pathlib import Path
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import pandas as pd
+import polars as pl
+from tqdm.auto import tqdm
+
+
+def get_daily_sofa(
+    data_directory: str,
+    day_cohort: pl.DataFrame,
+    cache_path: Path,
+    source_path: Path,
+    timezone: str | None,
+    *,
+    batch_size: int = 10_000,
+    refresh: bool = False,
+) -> pl.DataFrame:
+    """Compute daily SOFA once and reuse it across the SAT and SBT steps."""
+    key = "hosp_id_icu_day"
+    day_keys = day_cohort.select(key).unique()
+    cache_path = Path(cache_path)
+    source_path = Path(source_path)
+    if batch_size <= 0:
+        raise ValueError("SOFA batch size must be greater than zero")
+
+    if not refresh and cache_path.exists():
+        cache_is_current = (
+            not source_path.exists()
+            or cache_path.stat().st_mtime_ns >= source_path.stat().st_mtime_ns
+        )
+        if cache_is_current:
+            try:
+                cached = pl.read_parquet(cache_path)
+                required_columns = {key, "sofa_total"}
+                cache_has_same_keys = (
+                    required_columns.issubset(cached.columns)
+                    and cached.height == day_keys.height
+                    and cached[key].n_unique() == cached.height
+                    and cached.select(key).join(day_keys, on=key, how="anti").is_empty()
+                )
+                if cache_has_same_keys:
+                    print(f"Loaded cached daily SOFA: {cache_path}")
+                    return cached.select(key, "sofa_total")
+            except (OSError, pl.exceptions.PolarsError):
+                pass
+
+        print("Daily SOFA cache is stale or does not match this cohort; recomputing")
+
+    from clifpy.utils.sofa_polars import compute_sofa_polars
+
+    hospitalization_ids = (
+        day_cohort.get_column("hospitalization_id").unique().sort().to_list()
+    )
+    batch_starts = range(0, len(hospitalization_ids), batch_size)
+    batch_results = []
+    progress = tqdm(
+        batch_starts,
+        total=(len(hospitalization_ids) + batch_size - 1) // batch_size,
+        desc="Computing daily SOFA",
+        unit="batch",
+    )
+    for start in progress:
+        batch_ids = hospitalization_ids[start:start + batch_size]
+        batch_cohort = day_cohort.filter(
+            pl.col("hospitalization_id").is_in(batch_ids)
+        )
+        progress.set_postfix(
+            hospitalizations=(
+                f"{min(start + batch_size, len(hospitalization_ids)):,}"
+                f"/{len(hospitalization_ids):,}"
+            ),
+            days=f"{batch_cohort.height:,}",
+        )
+        batch_result = compute_sofa_polars(
+            data_directory=data_directory,
+            cohort_df=batch_cohort,
+            filetype="parquet",
+            id_name=key,
+            extremal_type="worst",
+            fill_na_scores_with_zero=True,
+            remove_outliers=True,
+            timezone=timezone,
+        ).select(key, "sofa_total")
+        batch_results.append(batch_result)
+
+        del batch_ids, batch_cohort, batch_result
+        gc.collect()
+
+    computed = pl.concat(batch_results, how="vertical_relaxed")
+    del batch_results, hospitalization_ids
+    gc.collect()
+
+    # Keep one row per requested day so cache validation is exact even when a
+    # day has no qualifying SOFA observations.
+    daily_sofa = day_keys.join(computed, on=key, how="left")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = cache_path.with_suffix(".tmp.parquet")
+    daily_sofa.write_parquet(temporary_path)
+    temporary_path.replace(cache_path)
+    print(f"Saved daily SOFA cache: {cache_path}")
+    return daily_sofa
 
 
 def plot_upset(failure_df: pd.DataFrame, boolean_cols: list[str], output_path: Path) -> None:

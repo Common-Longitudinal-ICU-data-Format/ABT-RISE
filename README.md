@@ -34,7 +34,8 @@ Patients on invasive mechanical ventilation (IMV) at any point during a hospital
    - `data_directory` — absolute path to your CLIF parquet tables.
    - `filetype` — `parquet` (default).
    - `timezone` — IANA name, e.g. `US/Central`.
-3. Leave `abtrise_input_dir` (default `./output_phi/analysis`) and `abtrise_output_dir` (default `./output_to_share`) at their defaults unless your storage layout differs. Python step 5 writes the analysis parquet files to `abtrise_input_dir`; the R steps read from it and write all shareable tables / figures / model summaries to `abtrise_output_dir` (same folder Python uses for shareable CONSORTs and Table 1s).
+3. `sofa_batch_size` defaults to `10000` hospitalizations. Lower it to reduce peak memory at the cost of additional source-table reads.
+4. Leave `abtrise_input_dir` (default `./output_phi/analysis`) and `abtrise_output_dir` (default `./output_to_share`) at their defaults unless your storage layout differs. Python step 5 writes the analysis parquet files to `abtrise_input_dir`; the R steps read from it and write all shareable tables / figures / model summaries to `abtrise_output_dir` (same folder Python uses for shareable CONSORTs and Table 1s).
 
 ### Where outputs land
 
