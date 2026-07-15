@@ -24,11 +24,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "clifpy", specifier = ">=0.3.9" },
+    { name = "clifpy", specifier = ">=0.5.0" },
     { name = "marimo", specifier = ">=0.20.2" },
     { name = "polars", specifier = ">=1.38.1" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
-    { name = "upsetplot", specifier = ">=0.9.0" },
+    { name = "upsetplot", specifier = ">=0.9" },
 ]
 
 [[package]]
@@ -175,7 +175,7 @@ wheels = [
 
 [[package]]
 name = "clifpy"
-version = "0.3.9"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build" },
@@ -188,14 +188,15 @@ dependencies = [
     { name = "pytest" },
     { name = "pytz" },
     { name = "pyyaml" },
+    { name = "reportlab" },
     { name = "seaborn" },
     { name = "toml" },
     { name = "tqdm" },
     { name = "twine" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/83/c6/a90c7dd6b38e990ecb8d8d93d51c6f8516f5d720a1881964c2ae29295c70/clifpy-0.3.9.tar.gz", hash = "sha256:371f1e5f40820cefac1d7b746ad80fb753ec26ec79998525b8de7c16c9c67f39", size = 1929841, upload-time = "2026-02-19T16:27:12.938Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b9/8e/2da924b79890e6f0d11e6093120ed7a1b0f012559ad897f484fedacbd55f/clifpy-0.5.0.tar.gz", hash = "sha256:a3381dd529326b9d70949b662f8d29fe17636be0a3c0101357f6b59d89319fde", size = 2028610, upload-time = "2026-06-11T18:04:01.172Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/46/9e/484cc7b3bf819ac2de04718201cd8bb9efd2a6b71d9d1d2735b74073ad4e/clifpy-0.3.9-py3-none-any.whl", hash = "sha256:a847d01ad465c931373aecee2f527cafd0b5bbc64550c56b129f37f15aecf602", size = 1967271, upload-time = "2026-02-19T16:27:10.614Z" },
+    { url = "https://files.pythonhosted.org/packages/82/f3/d89d02a174c43fd55d7306bcd757ee4ae91094b78b9ef160a63d7fdca8f6/clifpy-0.5.0-py3-none-any.whl", hash = "sha256:bc908435bd8a09ad5db49760926e6bac14c2841bab748594f13f282bd8caa19a", size = 2080930, upload-time = "2026-06-11T18:03:59.899Z" },
 ]
 
 [[package]]
@@ -1336,6 +1337,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5a/a9/104ec9234c8448c4379768221ea6df01260cd6c2ce13182d4eac531c8342/readme_renderer-44.0.tar.gz", hash = "sha256:8712034eabbfa6805cacf1402b4eeb2a73028f72d1166d6f5cb7f9c047c5d1e1", size = 32056, upload-time = "2024-07-08T15:00:57.805Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/67/921ec3024056483db83953ae8e48079ad62b92db7880013ca77632921dd0/readme_renderer-44.0-py3-none-any.whl", hash = "sha256:2fbca89b81a08526aadf1357a8c2ae889ec05fb03f5da67f9769c9a592166151", size = 13310, upload-time = "2024-07-08T15:00:56.577Z" },
+]
+
+[[package]]
+name = "reportlab"
+version = "5.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "charset-normalizer" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/41/d6/4b7b0cf56880eb96533e607967be6a939e344675601e033d113a0bfa1f4e/reportlab-5.0.0.tar.gz", hash = "sha256:e4494a0c6623ae213bb856fba523171b2b54a7bf629fda02d5e525a7b899a784", size = 3701928, upload-time = "2026-06-18T11:34:31.145Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/07/70085c17a369605f15e301d10ab902115019b1126c7253d964afc230c7d6/reportlab-5.0.0-py3-none-any.whl", hash = "sha256:9d5a3affa84919e1111ede580031266a570e93b1ce388219621347965ff1d93c", size = 1956710, upload-time = "2026-06-18T11:34:29.07Z" },
 ]
 
 [[package]]
