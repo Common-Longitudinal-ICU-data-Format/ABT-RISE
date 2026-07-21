@@ -322,8 +322,12 @@ def _(DATA_DIR, FILETYPE, TIMEZONE, first_icu, hosp_final, pd, pl, strip_tz):
             filters={"hospitalization_id": _cohort_ids}, verbose=False,
         )
         _resp.df["device_category"] = _resp.df["device_category"].str.lower()
-        _resp_filled = _resp.waterfall(bfill=False, verbose=True)
-        _resp_pd = _resp_filled.df.copy()
+        # Avoid wrapping and copying this multi-million-row result. On Windows,
+        # that extra peak allocation can terminate Python with 0xC0000005.
+        _resp_pd = _resp.waterfall(
+            bfill=False, verbose=True, return_dataframe=True
+        )
+        del _resp
         _cache_path.parent.mkdir(parents=True, exist_ok=True)
         _resp_pd.to_parquet(_cache_path, index=False)
         print(f"Saved waterfall cache to: {_cache_path}")
