@@ -58,7 +58,11 @@ def _(DATA_DIR, OUTPUT_PHI, Path, pl):
     patient = (
         pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet")
         .select("patient_id", "death_dttm")
-        .with_columns(pl.col("death_dttm").dt.replace_time_zone(None))
+        .with_columns(
+            pl.col("death_dttm")
+            .cast(pl.Datetime("us"))
+            .dt.replace_time_zone(None)
+        )
     )
 
     print(f"SAT day-level: {sat.height:,} rows x {sat.width} cols")

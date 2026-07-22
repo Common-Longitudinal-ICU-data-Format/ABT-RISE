@@ -724,7 +724,15 @@ def _(DATA_DIR, OUTPUT_PHI, Path, SOFA_BATCH_SIZE, TIMEZONE, cohort, cohort_elig
     )
 
     # Outcome: 3=death, 2=extubated, 0=alive (per day)
-    _patient = pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet").select("patient_id", "death_dttm").with_columns(pl.col("death_dttm").dt.replace_time_zone(None))
+    _patient = (
+        pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet")
+        .select("patient_id", "death_dttm")
+        .with_columns(
+            pl.col("death_dttm")
+            .cast(pl.Datetime("us"))
+            .dt.replace_time_zone(None)
+        )
+    )
     _death_info = cohort.select(
         "hospitalization_id", "patient_id", "extubation_time", "discharge_dttm",
     ).join(_patient, on="patient_id", how="left")
