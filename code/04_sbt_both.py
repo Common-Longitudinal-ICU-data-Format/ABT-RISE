@@ -743,7 +743,18 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
     )
 
     # Outcome: 3=death, 2=extubated, 0=alive (per day)
-    _patient = pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet").select("patient_id", "death_dttm").with_columns(pl.col("death_dttm").dt.replace_time_zone(None))
+    _patient = pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet").select(
+        "patient_id", "death_dttm"
+    )
+    _death_dtype = _patient.schema["death_dttm"]
+    if _death_dtype == pl.Date:
+        _patient = _patient.with_columns(
+            pl.col("death_dttm").cast(pl.Datetime("us"))
+        )
+    elif isinstance(_death_dtype, pl.Datetime) and _death_dtype.time_zone is not None:
+        _patient = _patient.with_columns(
+            pl.col("death_dttm").dt.replace_time_zone(None)
+        )
     _death_info = cohort.select(
         "hospitalization_id", "patient_id", "extubation_time", "discharge_dttm",
     ).join(_patient, on="patient_id", how="left")

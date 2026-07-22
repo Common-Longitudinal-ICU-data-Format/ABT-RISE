@@ -55,11 +55,18 @@ def _(DATA_DIR, OUTPUT_PHI, Path, pl):
     cohort = pl.read_parquet(OUTPUT_PHI / "cohort.parquet")
 
     # Load patient table for death_dttm
-    patient = (
-        pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet")
-        .select("patient_id", "death_dttm")
-        .with_columns(pl.col("death_dttm").dt.replace_time_zone(None))
+    patient = pl.read_parquet(Path(DATA_DIR) / "clif_patient.parquet").select(
+        "patient_id", "death_dttm"
     )
+    _death_dtype = patient.schema["death_dttm"]
+    if _death_dtype == pl.Date:
+        patient = patient.with_columns(
+            pl.col("death_dttm").cast(pl.Datetime("us"))
+        )
+    elif isinstance(_death_dtype, pl.Datetime) and _death_dtype.time_zone is not None:
+        patient = patient.with_columns(
+            pl.col("death_dttm").dt.replace_time_zone(None)
+        )
 
     print(f"SAT day-level: {sat.height:,} rows x {sat.width} cols")
     print(f"SBT day-level: {sbt.height:,} rows x {sbt.width} cols")
