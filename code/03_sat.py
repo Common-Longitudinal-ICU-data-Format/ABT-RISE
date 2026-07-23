@@ -630,7 +630,10 @@ def _(DATA_DIR, OUTPUT_PHI, Path, SOFA_BATCH_SIZE, TIMEZONE, cohort, cohort_elig
         calculate_cci(_dx, hierarchy=True)
     ).select("hospitalization_id", "cci_score")
 
-    # SOFA — worst per ICU calendar day, then shift to prior day
+    # SOFA — worst per ICU calendar day, then shift to prior day.
+    # Reuses the cache built by 02b_sofa.py (refresh=False); only recomputes if
+    # the cache is missing/stale. This _day_cohort MUST stay identical to the
+    # one in 02b_sofa.py so the cached day keys match and are reused.
     _day_cohort = (
         df.select("hosp_id_icu_day", "hospitalization_id", "icu_day_date")
         .unique(subset=["hosp_id_icu_day"])
@@ -646,7 +649,7 @@ def _(DATA_DIR, OUTPUT_PHI, Path, SOFA_BATCH_SIZE, TIMEZONE, cohort, cohort_elig
         source_path=OUTPUT_PHI / "wide_dataset.parquet",
         timezone=TIMEZONE,
         batch_size=SOFA_BATCH_SIZE,
-        refresh=True,
+        refresh=False,
     )
 
     _sofa_with_day = _daily_sofa.join(
