@@ -82,6 +82,7 @@ run_step() {
 
 run_step "01 Cohort"             uv run python code/01_cohort.py
 run_step "02 Wide dataset"       uv run python code/02_wide_dataset.py
+run_step "02b Daily SOFA"        uv run python code/02b_sofa.py
 run_step "03 SAT"                uv run python code/03_sat.py
 run_step "04 SBT"                uv run python code/04_sbt_both.py
 run_step "05 Analysis dataset"   uv run python code/05_analysis_dataset.py

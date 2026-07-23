@@ -214,6 +214,8 @@ Invoke-Step "01 Cohort"           { uv run python code/01_cohort.py }
 
 Invoke-Step "02 Wide dataset"     { uv run python code/02_wide_dataset.py }
 
+Invoke-Step "02b Daily SOFA"      { uv run python code/02b_sofa.py }
+
 Invoke-Step "03 SAT"              { uv run python code/03_sat.py }
 
 Invoke-Step "04 SBT"              { uv run python code/04_sbt_both.py }
