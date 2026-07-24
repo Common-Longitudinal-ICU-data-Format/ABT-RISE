@@ -1054,139 +1054,162 @@ def _(
     return
 
 
-@app.cell
-def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sat_flag_cols):
-    from sklearn.metrics import cohen_kappa_score, confusion_matrix
-    import matplotlib.pyplot as plt
-    from matplotlib import rcParams
-    rcParams["font.family"] = "Arial"
-    rcParams["font.size"] = 8
-
-    def _bootstrap_metrics_ci(y_true, y_pred, n_boot=2000, ci=0.95, seed=42):
-        """Bootstrap 95% CIs for all concordance metrics."""
-        rng = np.random.default_rng(seed)
-        n = len(y_true)
-        results = {k: [] for k in [
-            "Accuracy", "Sensitivity", "Specificity", "PPV", "NPV", "F1", "Cohen_Kappa"
-        ]}
-        for _ in range(n_boot):
-            idx = rng.choice(n, size=n, replace=True)
-            yt, yp = y_true.iloc[idx], y_pred.iloc[idx]
-            cm = confusion_matrix(yt, yp, labels=[0, 1])
-            tn, fp, fn, tp = cm.ravel()
-            tot = cm.sum()
-            results["Accuracy"].append((tp + tn) / tot)
-            results["Sensitivity"].append(tp / (tp + fn) if tp + fn else np.nan)
-            results["Specificity"].append(tn / (tn + fp) if tn + fp else np.nan)
-            results["PPV"].append(tp / (tp + fp) if tp + fp else np.nan)
-            results["NPV"].append(tn / (tn + fn) if tn + fn else np.nan)
-            p = tp / (tp + fp) if tp + fp else 0
-            r = tp / (tp + fn) if tp + fn else 0
-            results["F1"].append(2 * p * r / (p + r) if p + r else np.nan)
-            try:
-                results["Cohen_Kappa"].append(cohen_kappa_score(yt, yp))
-            except Exception:
-                results["Cohen_Kappa"].append(np.nan)
-        alpha = (1 - ci) / 2
-        ci_dict = {}
-        for k, vals in results.items():
-            arr = np.array([v for v in vals if not np.isnan(v)])
-            if len(arr):
-                ci_dict[k] = (float(np.percentile(arr, alpha * 100)),
-                              float(np.percentile(arr, (1 - alpha) * 100)))
-            else:
-                ci_dict[k] = (np.nan, np.nan)
-        return ci_dict
-
-    def _landis_koch(kappa):
-        """Classify kappa value using the Landis-Koch agreement scale."""
-        if kappa < 0: return "Poor"
-        elif kappa < 0.21: return "Slight"
-        elif kappa < 0.41: return "Fair"
-        elif kappa < 0.61: return "Moderate"
-        elif kappa < 0.81: return "Substantial"
-        return "Almost Perfect"
-
-    # Fill null flags with 0 in Polars, then convert to pandas once for sklearn/matplotlib
-    _fill_cols = sat_flag_cols + ["sat_ground_truth"]
-    _con_df = (
-        df_grouped
-        .filter(pl.col("is_vent_day") & (pl.col("eligible_event") == 1))
-        .with_columns([pl.col(c).fill_null(0) for c in _fill_cols])
-        .to_pandas()
-    )
-
-    _metrics_wide = {}
-
-    # Compare each algorithmic flag against the flowsheet ground truth
-    for _col in sat_flag_cols:
-        _y_true = _con_df["sat_ground_truth"]  # ground truth (from EHR flowsheet)
-        _y_pred = _con_df[_col]                            # algorithmic prediction
-
-        # Compute confusion matrix and standard metrics
-        _cm = confusion_matrix(_y_true, _y_pred, labels=[0, 1])
-        _tn, _fp, _fn, _tp = _cm.ravel()
-        _total = _cm.sum()
-        _accuracy = (_tp + _tn) / _total
-        _precision = _tp / (_tp + _fp) if _tp + _fp else 0
-        _recall = _tp / (_tp + _fn) if _tp + _fn else 0
-        _f1 = 2 * _precision * _recall / (_precision + _recall) if _precision + _recall else 0
-        _specificity = _tn / (_tn + _fp) if _tn + _fp else 0
-        _npv = _tn / (_tn + _fn) if _tn + _fn else 0
-        _kappa = cohen_kappa_score(_y_true, _y_pred)
-
-        # Bootstrap 95% CIs for all metrics
-        _ci = _bootstrap_metrics_ci(_y_true, _y_pred)
-
-        # Save labelled confusion matrix CSV
-        _cm_df = pd.DataFrame(
-            _cm,
-            index=["Actual Negative", "Actual Positive"],
-            columns=["Predicted Negative", "Predicted Positive"],
-        )
-        _cm_df.to_csv(OUTPUT_SHARE / f"confusion_matrix_{_col}.csv")
-
-        # Save a JAMA-style confusion matrix heatmap
-        _cm_pct = _cm / _total * 100
-        _fig, _ax = plt.subplots(figsize=(3.5, 3.0))
-        _ax.imshow(_cm, cmap="cividis")
-        _ax.set_xticks([0, 1]); _ax.set_yticks([0, 1])
-        _ax.set_xticklabels(["No Delivery", "Delivery"])
-        _ax.set_yticklabels(["No Delivery", "Delivery"])
-        _ax.set_xlabel(f"{_col} flag"); _ax.set_ylabel("Flowsheet delivery flag")
-        _ax.set_title(f"Concordance: flowsheet vs {_col}", fontweight="bold")
-        _ax.spines["top"].set_visible(False); _ax.spines["right"].set_visible(False)
-        for _i in range(2):
-            for _j in range(2):
-                _ax.text(_j, _i, f"{_cm[_i, _j]}\n({_cm_pct[_i, _j]:.1f}%)",
-                         ha="center", va="center",
-                         color="white" if _cm[_i, _j] > _cm.max() / 2 else "black")
-        _fig.tight_layout()
-        _fig.savefig(OUTPUT_SHARE / f"confusion_matrix_{_col}.png", bbox_inches="tight", dpi=300)
-        plt.close(_fig)
-
-        # Build row-wide metrics column for this flag
-        _metrics_wide[_col] = {
-            "TP": _tp,
-            "FP": _fp,
-            "FN": _fn,
-            "TN": _tn,
-            "Accuracy": f"{_accuracy:.4f} ({_ci['Accuracy'][0]:.4f}\u2013{_ci['Accuracy'][1]:.4f})",
-            "Sensitivity (Recall)": f"{_recall:.4f} ({_ci['Sensitivity'][0]:.4f}\u2013{_ci['Sensitivity'][1]:.4f})",
-            "Specificity": f"{_specificity:.4f} ({_ci['Specificity'][0]:.4f}\u2013{_ci['Specificity'][1]:.4f})",
-            "PPV (Precision)": f"{_precision:.4f} ({_ci['PPV'][0]:.4f}\u2013{_ci['PPV'][1]:.4f})",
-            "NPV": f"{_npv:.4f} ({_ci['NPV'][0]:.4f}\u2013{_ci['NPV'][1]:.4f})",
-            "F1": f"{_f1:.4f} ({_ci['F1'][0]:.4f}\u2013{_ci['F1'][1]:.4f})",
-            "Cohen_Kappa": f"{_kappa:.4f} ({_ci['Cohen_Kappa'][0]:.4f}\u2013{_ci['Cohen_Kappa'][1]:.4f})",
-            "Kappa_Interpretation": _landis_koch(_kappa),
-        }
-
-    # Save row-wide summary (metrics as rows, flags as columns)
-    concordance_df = pd.DataFrame(_metrics_wide)
-    concordance_df.index.name = "Metric"
-    concordance_df.to_csv(OUTPUT_SHARE / "delivery_concordance_summary.csv")
-    print(concordance_df.to_string())
-    return
+# ----------------------------------------------------------------------------
+# DISABLED 2026-07-24 -- concordance / confusion-matrix analysis lives in R.
+#
+# ABTRISE_02_criterion_c.R (Analysis 2, Criterion Validity) builds the same 2x2
+# table from file1_person_period.parquet, which 05_analysis_dataset.py:288-289
+# derives from the sat_ground_truth column written by this notebook (renamed
+# there to flowsheet_SAT). ABTRISE_01_setup_c.R:201 reads that file.
+#
+# The R version is also the statistically correct one:
+#   - 8 metrics (adds MCC) vs the 7 below
+#   - BCa bootstrap, B = 10,000, clustered on hospitalization_id.
+#     The loop below resampled patient-DAYS independently, which ignores
+#     within-patient correlation and yields CIs that are too narrow.
+#   - writes A2_criterion/models/A2_confusion_matrix.csv and
+#     A2_criterion/figures/fig_A2_confusion_matrix.png
+#
+# Nothing downstream reads what this cell wrote (delivery_concordance_summary.csv,
+# confusion_matrix_<flag>.csv / .png) -- verified by grep across the repo.
+#
+# It was also the pipeline bottleneck: 2 flags x n_boot=2000 = 4000 O(n)
+# iterations of rng.choice + two .iloc gathers + two confusion matrices, all
+# single-threaded, which at this site's n ran for hours on one core.
+# ----------------------------------------------------------------------------
+# @app.cell
+# def _(OUTPUT_SHARE, df_grouped, np, pd, pl, sat_flag_cols):
+#     from sklearn.metrics import cohen_kappa_score, confusion_matrix
+#     import matplotlib.pyplot as plt
+#     from matplotlib import rcParams
+#     rcParams["font.family"] = "Arial"
+#     rcParams["font.size"] = 8
+#
+#     def _bootstrap_metrics_ci(y_true, y_pred, n_boot=2000, ci=0.95, seed=42):
+#         """Bootstrap 95% CIs for all concordance metrics."""
+#         rng = np.random.default_rng(seed)
+#         n = len(y_true)
+#         results = {k: [] for k in [
+#             "Accuracy", "Sensitivity", "Specificity", "PPV", "NPV", "F1", "Cohen_Kappa"
+#         ]}
+#         for _ in range(n_boot):
+#             idx = rng.choice(n, size=n, replace=True)
+#             yt, yp = y_true.iloc[idx], y_pred.iloc[idx]
+#             cm = confusion_matrix(yt, yp, labels=[0, 1])
+#             tn, fp, fn, tp = cm.ravel()
+#             tot = cm.sum()
+#             results["Accuracy"].append((tp + tn) / tot)
+#             results["Sensitivity"].append(tp / (tp + fn) if tp + fn else np.nan)
+#             results["Specificity"].append(tn / (tn + fp) if tn + fp else np.nan)
+#             results["PPV"].append(tp / (tp + fp) if tp + fp else np.nan)
+#             results["NPV"].append(tn / (tn + fn) if tn + fn else np.nan)
+#             p = tp / (tp + fp) if tp + fp else 0
+#             r = tp / (tp + fn) if tp + fn else 0
+#             results["F1"].append(2 * p * r / (p + r) if p + r else np.nan)
+#             try:
+#                 results["Cohen_Kappa"].append(cohen_kappa_score(yt, yp))
+#             except Exception:
+#                 results["Cohen_Kappa"].append(np.nan)
+#         alpha = (1 - ci) / 2
+#         ci_dict = {}
+#         for k, vals in results.items():
+#             arr = np.array([v for v in vals if not np.isnan(v)])
+#             if len(arr):
+#                 ci_dict[k] = (float(np.percentile(arr, alpha * 100)),
+#                               float(np.percentile(arr, (1 - alpha) * 100)))
+#             else:
+#                 ci_dict[k] = (np.nan, np.nan)
+#         return ci_dict
+#
+#     def _landis_koch(kappa):
+#         """Classify kappa value using the Landis-Koch agreement scale."""
+#         if kappa < 0: return "Poor"
+#         elif kappa < 0.21: return "Slight"
+#         elif kappa < 0.41: return "Fair"
+#         elif kappa < 0.61: return "Moderate"
+#         elif kappa < 0.81: return "Substantial"
+#         return "Almost Perfect"
+#
+#     # Fill null flags with 0 in Polars, then convert to pandas once for sklearn/matplotlib
+#     _fill_cols = sat_flag_cols + ["sat_ground_truth"]
+#     _con_df = (
+#         df_grouped
+#         .filter(pl.col("is_vent_day") & (pl.col("eligible_event") == 1))
+#         .with_columns([pl.col(c).fill_null(0) for c in _fill_cols])
+#         .to_pandas()
+#     )
+#
+#     _metrics_wide = {}
+#
+#     # Compare each algorithmic flag against the flowsheet ground truth
+#     for _col in sat_flag_cols:
+#         _y_true = _con_df["sat_ground_truth"]  # ground truth (from EHR flowsheet)
+#         _y_pred = _con_df[_col]                            # algorithmic prediction
+#
+#         # Compute confusion matrix and standard metrics
+#         _cm = confusion_matrix(_y_true, _y_pred, labels=[0, 1])
+#         _tn, _fp, _fn, _tp = _cm.ravel()
+#         _total = _cm.sum()
+#         _accuracy = (_tp + _tn) / _total
+#         _precision = _tp / (_tp + _fp) if _tp + _fp else 0
+#         _recall = _tp / (_tp + _fn) if _tp + _fn else 0
+#         _f1 = 2 * _precision * _recall / (_precision + _recall) if _precision + _recall else 0
+#         _specificity = _tn / (_tn + _fp) if _tn + _fp else 0
+#         _npv = _tn / (_tn + _fn) if _tn + _fn else 0
+#         _kappa = cohen_kappa_score(_y_true, _y_pred)
+#
+#         # Bootstrap 95% CIs for all metrics
+#         _ci = _bootstrap_metrics_ci(_y_true, _y_pred)
+#
+#         # Save labelled confusion matrix CSV
+#         _cm_df = pd.DataFrame(
+#             _cm,
+#             index=["Actual Negative", "Actual Positive"],
+#             columns=["Predicted Negative", "Predicted Positive"],
+#         )
+#         _cm_df.to_csv(OUTPUT_SHARE / f"confusion_matrix_{_col}.csv")
+#
+#         # Save a JAMA-style confusion matrix heatmap
+#         _cm_pct = _cm / _total * 100
+#         _fig, _ax = plt.subplots(figsize=(3.5, 3.0))
+#         _ax.imshow(_cm, cmap="cividis")
+#         _ax.set_xticks([0, 1]); _ax.set_yticks([0, 1])
+#         _ax.set_xticklabels(["No Delivery", "Delivery"])
+#         _ax.set_yticklabels(["No Delivery", "Delivery"])
+#         _ax.set_xlabel(f"{_col} flag"); _ax.set_ylabel("Flowsheet delivery flag")
+#         _ax.set_title(f"Concordance: flowsheet vs {_col}", fontweight="bold")
+#         _ax.spines["top"].set_visible(False); _ax.spines["right"].set_visible(False)
+#         for _i in range(2):
+#             for _j in range(2):
+#                 _ax.text(_j, _i, f"{_cm[_i, _j]}\n({_cm_pct[_i, _j]:.1f}%)",
+#                          ha="center", va="center",
+#                          color="white" if _cm[_i, _j] > _cm.max() / 2 else "black")
+#         _fig.tight_layout()
+#         _fig.savefig(OUTPUT_SHARE / f"confusion_matrix_{_col}.png", bbox_inches="tight", dpi=300)
+#         plt.close(_fig)
+#
+#         # Build row-wide metrics column for this flag
+#         _metrics_wide[_col] = {
+#             "TP": _tp,
+#             "FP": _fp,
+#             "FN": _fn,
+#             "TN": _tn,
+#             "Accuracy": f"{_accuracy:.4f} ({_ci['Accuracy'][0]:.4f}\u2013{_ci['Accuracy'][1]:.4f})",
+#             "Sensitivity (Recall)": f"{_recall:.4f} ({_ci['Sensitivity'][0]:.4f}\u2013{_ci['Sensitivity'][1]:.4f})",
+#             "Specificity": f"{_specificity:.4f} ({_ci['Specificity'][0]:.4f}\u2013{_ci['Specificity'][1]:.4f})",
+#             "PPV (Precision)": f"{_precision:.4f} ({_ci['PPV'][0]:.4f}\u2013{_ci['PPV'][1]:.4f})",
+#             "NPV": f"{_npv:.4f} ({_ci['NPV'][0]:.4f}\u2013{_ci['NPV'][1]:.4f})",
+#             "F1": f"{_f1:.4f} ({_ci['F1'][0]:.4f}\u2013{_ci['F1'][1]:.4f})",
+#             "Cohen_Kappa": f"{_kappa:.4f} ({_ci['Cohen_Kappa'][0]:.4f}\u2013{_ci['Cohen_Kappa'][1]:.4f})",
+#             "Kappa_Interpretation": _landis_koch(_kappa),
+#         }
+#
+#     # Save row-wide summary (metrics as rows, flags as columns)
+#     concordance_df = pd.DataFrame(_metrics_wide)
+#     concordance_df.index.name = "Metric"
+#     concordance_df.to_csv(OUTPUT_SHARE / "delivery_concordance_summary.csv")
+#     print(concordance_df.to_string())
+#     return
 
 
 @app.cell
