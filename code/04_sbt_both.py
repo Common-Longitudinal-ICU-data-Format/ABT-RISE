@@ -547,14 +547,12 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
         (~pl.col("is_eligible")).alias("no_6h_window"),
     )
 
-    # Build the ground truth: a day counts as "delivered" if ANY of the 4 EHR
-    # flowsheet columns is charted (non-null), AND the day was eligible
+    # Screening documentation is retained above for QC but does not establish delivery.
+    # Any charted delivery value counts, including a documented fail/no value.
     df_grouped = df_grouped.with_columns(
         pl.when(
             (
-                pl.col("sbt_screen_pass_fail").is_not_null()
-                | pl.col("sbt_screen_performed").is_not_null()
-                | pl.col("sbt_delivery_pass_fail").is_not_null()
+                pl.col("sbt_delivery_pass_fail").is_not_null()
                 | pl.col("sbt_delivery_performed").is_not_null()
             )
             & (pl.col("eligible_event") == 1)

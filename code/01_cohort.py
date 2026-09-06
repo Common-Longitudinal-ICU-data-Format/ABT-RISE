@@ -879,7 +879,22 @@ def _(
         data_directory=DATA_DIR, filetype=FILETYPE, timezone=TIMEZONE,
         filters={"hospitalization_id": _cohort_ids}, verbose=False,
     )
-    assessments_df = pl.from_pandas(strip_tz(_pa.df)).filter(
+    _all_assessments = pl.from_pandas(strip_tz(_pa.df))
+    _sat_sbt_quality = (
+        _all_assessments
+        .filter(
+            pl.col("assessment_category").str.to_lowercase().str.starts_with("sat_")
+            | pl.col("assessment_category").str.to_lowercase().str.starts_with("sbt_")
+        )
+        .group_by("assessment_name", "assessment_category")
+        .len(name="count")
+        .sort("assessment_category", "assessment_name", nulls_last=True)
+    )
+    _quality_path = OUTPUT_DIR / "sat_sbt_assessment_category_name_counts.csv"
+    _sat_sbt_quality.write_csv(str(_quality_path))
+    print(f"Saved SAT/SBT category-name counts to {_quality_path}")
+
+    assessments_df = _all_assessments.filter(
         pl.col("assessment_category").str.to_lowercase().is_in(_ASSESSMENT_CATS)
     )
     print("Unique values per category (before conversion):")

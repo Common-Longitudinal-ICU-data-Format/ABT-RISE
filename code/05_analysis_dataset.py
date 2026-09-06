@@ -345,6 +345,12 @@ def _(merged, pl):
         "SAT_prop_primary", "SAT_prop_modified",
         "SBT_prop_2min", "SBT_prop_5min",
     ]
+    _flowsheet_source_cols = [
+        "sat_screen_pass_fail", "sat_screen_performed",
+        "sat_delivery_pass_fail", "sat_delivery_performed",
+        "sbt_screen_pass_fail", "sbt_screen_performed",
+        "sbt_delivery_pass_fail", "sbt_delivery_performed",
+    ]
     _flowsheet_cols = ["flowsheet_SAT", "flowsheet_SBT"]
     _outcome_cols = ["extubated"]
     _clinical_cols = ["sofa_prior", "fio2_prior", "peep_prior", "nee_prior", "sedation_prior"]
@@ -364,7 +370,8 @@ def _(merged, pl):
     ]
 
     file1 = f1.select(
-        _hospital_cols + _id_cols + _exposure_cols + _flowsheet_cols + _outcome_cols + _clinical_cols
+        _hospital_cols + _id_cols + _exposure_cols + _flowsheet_source_cols
+        + _flowsheet_cols + _outcome_cols + _clinical_cols
     ).sort("hospitalization_id", "vent_day")
 
     print(f"File 1 (Person-Period): {file1.height:,} rows x {file1.width} cols")
@@ -478,17 +485,13 @@ def _(cohort, file1, mv_counts, patient, pl, sat):
         .alias("VFD_28")
     )
 
-    # site_has_flowsheet: 1 if any raw flowsheet columns were ever charted at this site
+    # Screening-only documentation does not establish trial delivery availability.
     _has_sat_flow = sat.select(
-        pl.col("sat_screen_pass_fail").is_not_null().any()
-        | pl.col("sat_screen_performed").is_not_null().any()
-        | pl.col("sat_delivery_pass_fail").is_not_null().any()
+        pl.col("sat_delivery_pass_fail").is_not_null().any()
         | pl.col("sat_delivery_performed").is_not_null().any()
     ).item()
     _has_sbt_flow = sbt.select(
-        pl.col("sbt_screen_pass_fail").is_not_null().any()
-        | pl.col("sbt_screen_performed").is_not_null().any()
-        | pl.col("sbt_delivery_pass_fail").is_not_null().any()
+        pl.col("sbt_delivery_pass_fail").is_not_null().any()
         | pl.col("sbt_delivery_performed").is_not_null().any()
     ).item()
     file2 = file2.with_columns(

@@ -18,7 +18,7 @@ Version: CLIF 2.x
   - categories used: `spo2`, `weight_kg`, `height_cm`
 - `medication_admin_continuous` — `hospitalization_id`, `admin_dttm`, `med_category`, `med_dose`, `med_dose_unit`
   - categories used: `norepinephrine`, `epinephrine`, `phenylephrine`, `angiotensin`, `vasopressin`, `dopamine`, `dobutamine`, `milrinone`, `isoproterenol`, `cisatracurium`, `vecuronium`, `rocuronium`, `fentanyl`, `propofol`, `lorazepam`, `midazolam`, `hydromorphone`, `morphine`
-- `patient_assessments` — `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value`, `categorical_value`
+- `patient_assessments` — `hospitalization_id`, `recorded_dttm`, `assessment_name`, `assessment_category`, `numerical_value`, `categorical_value`
   - categories used: `sat_screen_pass_fail`, `sat_screen_performed`, `sat_delivery_pass_fail`, `sat_delivery_performed`, `sbt_screen_pass_fail`, `sbt_screen_performed`, `sbt_delivery_pass_fail`, `sbt_delivery_performed`, `rass`, `gcs_total`
 - `hospital_diagnosis` — `hospitalization_id`, `diagnosis_code` (used for Charlson/Elixhauser)
 
@@ -40,7 +40,7 @@ Patients on invasive mechanical ventilation (IMV) at any point during a hospital
 
 - `output_phi/` — site-internal intermediate parquet files (in `.gitignore`, do not share).
 - `output_to_share/` — everything safe to send to the coordinating center:
-  - `consort.{json,png}`, `sat_standard/`, `sbt_both_stabilities/` (from Python).
+  - `consort.{json,png}`, `assessment_quality.csv`, `sat_sbt_assessment_category_name_counts.csv`, `sat_standard/`, `sbt_both_stabilities/` (from Python).
   - `tables/`, `figures/{a2,a3,a4,a5,a6}/`, `models/{a2,a3,a4,a5,a6}/`, `diagnostics/` (from R).
   - All R output filenames are auto-prefixed with `site_name` (e.g. `RUSH_table1.csv`).
 
