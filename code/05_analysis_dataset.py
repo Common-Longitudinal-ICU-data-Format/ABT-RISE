@@ -234,6 +234,8 @@ def _(cohort, patient, pl, sat, sbt):
         "hosp_id_icu_day",
         "sbt_screen_pass_fail", "sbt_screen_performed",
         "sbt_delivery_pass_fail", "sbt_delivery_performed",
+        "sbt_screen_pass_fail_raw", "sbt_screen_performed_raw",
+        "sbt_delivery_pass_fail_raw", "sbt_delivery_performed_raw",
         "SBT_delivery_2min_primary", "SBT_delivery_5min_secondary",
         "sbt_ground_truth",
     ]
@@ -350,6 +352,10 @@ def _(merged, pl):
         "sat_delivery_pass_fail", "sat_delivery_performed",
         "sbt_screen_pass_fail", "sbt_screen_performed",
         "sbt_delivery_pass_fail", "sbt_delivery_performed",
+        "sat_screen_pass_fail_raw", "sat_screen_performed_raw",
+        "sat_delivery_pass_fail_raw", "sat_delivery_performed_raw",
+        "sbt_screen_pass_fail_raw", "sbt_screen_performed_raw",
+        "sbt_delivery_pass_fail_raw", "sbt_delivery_performed_raw",
     ]
     _flowsheet_cols = ["flowsheet_SAT", "flowsheet_SBT"]
     _outcome_cols = ["extubated"]

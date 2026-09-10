@@ -449,11 +449,18 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
 
     # Step 1: ALL days — base columns from cohort_elig
     _gt_cols = ["sat_screen_pass_fail", "sat_screen_performed", "sat_delivery_pass_fail", "sat_delivery_performed"]
+    _raw_cols = [f"{c}_raw" for c in _gt_cols]
     _base_cols = _gt_cols + ["eligible_event"]
     _all_days = (
-        cohort_elig.select(["hosp_id_icu_day"] + _base_cols)
+        cohort_elig.select(["hosp_id_icu_day", "recorded_dttm"] + _base_cols + _raw_cols)
         .group_by("hosp_id_icu_day")
-        .agg([pl.col(c).max().alias(c) for c in _base_cols])
+        .agg(
+            [pl.col(c).max().alias(c) for c in _base_cols]
+            + [
+                pl.col(c).sort_by("recorded_dttm").drop_nulls().first().alias(c)
+                for c in _raw_cols
+            ]
+        )
     )
 
     # --- Vent-day filter ---

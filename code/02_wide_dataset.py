@@ -242,8 +242,11 @@ def _(ALL_MEDS, OUTPUT_PHI, cohort, pl):
 def _(ALL_ASSESSMENTS, OUTPUT_PHI, cohort, pl):
     _assess_raw = pl.read_parquet(
         OUTPUT_PHI / "assessments_cohort.parquet",
-        columns=["hospitalization_id", "recorded_dttm", "assessment_category", "numerical_value"],
-    )
+        columns=[
+            "hospitalization_id", "recorded_dttm", "assessment_category",
+            "numerical_value", "categorical_value",
+        ],
+    ).with_row_index("_assessment_order")
     print(f"Assessment records: {_assess_raw.height:,}")
 
     # Filter to ICU window (exact datetimes, no truncation)
@@ -258,31 +261,65 @@ def _(ALL_ASSESSMENTS, OUTPUT_PHI, cohort, pl):
         .drop(["first_icu_start", "first_icu_end"])
     )
 
-    # Lowercase assessment_category
-    _assess = _assess.with_columns(pl.col("assessment_category").str.to_lowercase())
+    # Keep the original documented value as text for auditability. Prefer the
+    # categorical value; numerical text is used only when categorical is absent.
+    _assess = _assess.with_columns(
+        pl.col("assessment_category").str.to_lowercase(),
+        pl.coalesce([
+            pl.col("categorical_value"),
+            pl.col("numerical_value").cast(pl.Utf8),
+        ]).alias("_raw_value"),
+    ).sort("hospitalization_id", "recorded_dttm", "_assessment_order")
 
-    # Aggregate: mean per (hosp, recorded_dttm, assessment_category) — no truncation
+    # Preserve the first source value when duplicate rows share a timestamp.
     _assess_agg = (
         _assess
-        .group_by(["hospitalization_id", "recorded_dttm", "assessment_category"])
-        .agg(pl.col("numerical_value").mean())
+        .group_by(
+            ["hospitalization_id", "recorded_dttm", "assessment_category"],
+            maintain_order=True,
+        )
+        .agg(
+            pl.col("numerical_value").mean(),
+            pl.col("_raw_value").drop_nulls().first().alias("raw_value"),
+        )
     )
 
-    # Pivot to wide
-    assess_wide = _assess_agg.pivot(
+    # Pivot normalized numeric values and raw strings separately.
+    _normalized_wide = _assess_agg.pivot(
         on="assessment_category",
         index=["hospitalization_id", "recorded_dttm"],
         values="numerical_value",
     )
+    _raw_wide = _assess_agg.pivot(
+        on="assessment_category",
+        index=["hospitalization_id", "recorded_dttm"],
+        values="raw_value",
+    )
 
-    # Add null columns for any missing assessment categories
-    _existing = set(assess_wide.columns) - {"hospitalization_id", "recorded_dttm"}
+    # Add null columns for missing normalized and SAT/SBT raw categories.
+    _key_cols = {"hospitalization_id", "recorded_dttm"}
+    _existing = set(_normalized_wide.columns) - _key_cols
     for cat in ALL_ASSESSMENTS:
         if cat not in _existing:
-            assess_wide = assess_wide.with_columns(pl.lit(None).cast(pl.Float64).alias(cat))
+            _normalized_wide = _normalized_wide.with_columns(
+                pl.lit(None).cast(pl.Float64).alias(cat)
+            )
+
+    _raw_assessments = [c for c in ALL_ASSESSMENTS if c.startswith(("sat_", "sbt_"))]
+    _raw_existing = set(_raw_wide.columns) - _key_cols
+    for cat in _raw_assessments:
+        if cat not in _raw_existing:
+            _raw_wide = _raw_wide.with_columns(pl.lit(None).cast(pl.Utf8).alias(cat))
+    _raw_wide = _raw_wide.select(
+        ["hospitalization_id", "recorded_dttm"] + _raw_assessments
+    ).rename({c: f"{c}_raw" for c in _raw_assessments})
 
     # Reorder to canonical order
-    assess_wide = assess_wide.select(["hospitalization_id", "recorded_dttm"] + ALL_ASSESSMENTS)
+    assess_wide = (
+        _normalized_wide
+        .select(["hospitalization_id", "recorded_dttm"] + ALL_ASSESSMENTS)
+        .join(_raw_wide, on=["hospitalization_id", "recorded_dttm"], how="left")
+    )
     print(f"Assessments wide (original timestamps): {assess_wide.height:,} rows x {assess_wide.width} cols")
     print(f"  Missing categories (added as null): {sorted(set(ALL_ASSESSMENTS) - _existing)}")
     return (assess_wide,)
@@ -398,6 +435,7 @@ def _(assess_wide, cohort, meds_wide, pl, resp_df, spo2_df):
         "sbt_screen_pass_fail", "sbt_screen_performed",
         "sbt_delivery_pass_fail", "sbt_delivery_performed",
     }
+    _no_fill.update(c for c in wide.columns if c.endswith("_raw"))
     _fill_cols = [c for c in wide.columns if c not in _no_fill]
 
     wide = wide.with_columns(

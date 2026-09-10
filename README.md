@@ -20,6 +20,7 @@ Version: CLIF 2.x
   - categories used: `norepinephrine`, `epinephrine`, `phenylephrine`, `angiotensin`, `vasopressin`, `dopamine`, `dobutamine`, `milrinone`, `isoproterenol`, `cisatracurium`, `vecuronium`, `rocuronium`, `fentanyl`, `propofol`, `lorazepam`, `midazolam`, `hydromorphone`, `morphine`
 - `patient_assessments` — `hospitalization_id`, `recorded_dttm`, `assessment_name`, `assessment_category`, `numerical_value`, `categorical_value`
   - categories used: `sat_screen_pass_fail`, `sat_screen_performed`, `sat_delivery_pass_fail`, `sat_delivery_performed`, `sbt_screen_pass_fail`, `sbt_screen_performed`, `sbt_delivery_pass_fail`, `sbt_delivery_performed`, `rass`, `gcs_total`
+  - SAT/SBT `*_raw` fields in the day-level and person-period outputs contain the first documented value each day as text, preferring `categorical_value` over `numerical_value`.
 - `hospital_diagnosis` — `hospitalization_id`, `diagnosis_code` (used for Charlson/Elixhauser)
 
 ## Cohort identification
