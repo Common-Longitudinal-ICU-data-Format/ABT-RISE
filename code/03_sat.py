@@ -460,6 +460,13 @@ def _(DATA_DIR, Path, TIMEZONE, cohort, cohort_elig, df, failure_flags_df, pl, s
                 pl.col(c).sort_by("recorded_dttm").drop_nulls().first().alias(c)
                 for c in _raw_cols
             ]
+            + [
+                pl.col("recorded_dttm")
+                .filter(pl.col(c).is_not_null())
+                .n_unique()
+                .alias(c.removesuffix("_raw") + "_count")
+                for c in _raw_cols
+            ]
         )
     )
 
