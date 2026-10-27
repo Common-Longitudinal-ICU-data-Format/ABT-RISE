@@ -12,6 +12,7 @@ import gc
 import hashlib
 import importlib.metadata
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -105,7 +106,7 @@ def replay_baseline(
     try:
         if return_branch_candidates:
             sys.setprofile(capture_return)
-        with redirect_stdout(__import__("io").StringIO()):
+        with redirect_stdout(io.StringIO()):
             result = function(hospitals, pl, respiratory)
     finally:
         if return_branch_candidates:

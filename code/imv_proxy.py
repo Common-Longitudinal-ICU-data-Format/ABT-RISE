@@ -46,10 +46,6 @@ OFF_DEVICES = {"nippv", "cpap", "high flow nc", "face mask", "trach collar", "na
 CONTROLLED_MODES = {"assist control volume control", "pressure control", "pressure regulated volume control", "simv"}
 DEVICE_ALIASES = {"hfnc": "high flow nc"}
 MODE_ALIASES = {"acvc": "assist control volume control", "prvc": "pressure regulated volume control", "ps or cpap": "pressure support/cpap"}
-TIME_FIELDS = {
-    "window_start", "window_end", "icu_start", "start_time", "start_confirmation_time", "start_lower_bound",
-    "end_time", "end_confirmation_time", "end_lower_bound", "end_upper_bound", "last_imv_time", "censor_time",
-}
 
 
 def event_schema(timezone: str | None = None) -> dict[str, pl.DataType]:
@@ -166,7 +162,8 @@ def detect_normalized_episodes(normalized: pl.DataFrame, windows: pl.DataFrame, 
     timezone = normalized.schema["recorded_dttm"].time_zone
     windows = _normalize_windows(windows, timezone)
     schema = event_schema(timezone)
-    groups = normalized.partition_by("hospitalization_id", as_dict=True, maintain_order=True)
+    relevant = normalized.filter(pl.col("hospitalization_id").is_in(windows["hospitalization_id"].unique().implode()))
+    groups = relevant.partition_by("hospitalization_id", as_dict=True, maintain_order=True)
     output: list[dict[str, Any]] = []
     for window in windows.iter_rows(named=True):
         group = groups.get((window["hospitalization_id"],))
