@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 import subprocess
+import io
+from contextlib import redirect_stdout
 
 import polars as pl
 
@@ -63,7 +65,12 @@ class ComparisonWorkflow(unittest.TestCase):
             before = file_sha256(root / "cohort.parquet")
             out = root / "private"
             report = root / "report.md"
-            summary = run_comparison(metadata, out, report)
+            console = io.StringIO()
+            with redirect_stdout(console):
+                summary = run_comparison(metadata, out, report)
+            self.assertNotIn("confirmed starts=", console.getvalue())
+            self.assertNotIn("confirmed ends=", console.getvalue())
+            self.assertNotIn("new candidate admissions=", console.getvalue())
             self.assertEqual(summary["shared"]["B0"]["zero_elapsed_intervals"], 1)
             self.assertEqual(summary["shared"]["A0"]["zero_elapsed_intervals"], 0)
             self.assertEqual(summary["shared"]["C2"]["confirmed_starts"], 1)

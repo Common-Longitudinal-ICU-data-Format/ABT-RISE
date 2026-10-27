@@ -277,7 +277,7 @@ def run_comparison(metadata_path: Path, output_root: Path, report_path: Path, *,
                             .unique(subset=["hospitalization_id"], keep="first"))
                 private_parquet(output_root / "discovery" / f"{name}.parquet", expanded)
                 summary["discovery"][name] = {"new_cases": expanded.height, "new_probable_cases": int((expanded["start_evidence"] == "probable").sum())}
-        print(f"{name}: confirmed starts={summary['shared'][name]['confirmed_starts']}; confirmed ends={summary['shared'][name]['confirmed_ends']}; new candidate admissions={summary['discovery'][name]['new_cases']}")
+        print(f"{name}: comparison complete; exact counts remain in private summary")
     if gap_sensitivity:
         for gap in (60.0, 120.0, 240.0):
             if gap == max_gap_minutes:

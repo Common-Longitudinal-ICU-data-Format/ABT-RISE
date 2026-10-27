@@ -186,7 +186,7 @@ def stage_baseline(project: Path, output_root: Path, *, waterfall_cache: Path | 
         raise ValueError("Requested baseline waterfall cache does not exist")
     if cache.is_file():
         private_dir(staged / "output_phi")
-        destination = staged / "output_phi" / cache.name
+        destination = staged / "output_phi" / "resp_waterfall_cohort.parquet"
         shutil.copyfile(cache, destination)
         destination.chmod(0o600)
     return staged

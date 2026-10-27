@@ -89,6 +89,10 @@ class BaselineCharacterization(unittest.TestCase):
             self.assertEqual(file_sha256(root / "code" / "01_cohort.py"), file_sha256(staged / "code" / "01_cohort.py"))
             self.assertEqual(original.read_bytes(), before)
             self.assertNotEqual(staged, root)
+            renamed_cache = Path(tmp) / "archived-waterfall.parquet"
+            renamed_cache.write_bytes(b"SYNTHETIC CACHE BYTES")
+            with_cache = stage_baseline(root, root / "output_phi" / "imv_comparison", waterfall_cache=renamed_cache)
+            self.assertEqual((with_cache / "output_phi" / "resp_waterfall_cohort.parquet").read_bytes(), renamed_cache.read_bytes())
             cfg = json.loads((staged / "clif_config.json").read_text())
             self.assertEqual(Path(cfg["data_directory"]), (root / "data").resolve())
             if os.name == "posix":
